@@ -1,0 +1,41 @@
+# Build output
+bin/
+obj/
+publish/
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# .NET
+*.nupkg
+*.snupkg
+
+# IDE
+.claude/
+.cr/
+.cursor/
+.idea/
+
+# Runtime files
+*.db
+*.db-shm
+*.db-wal
+logs/
+
+# Config files with real credentials or server names
+# Keep appsettings.ejemplo.json (template) and appsettings.incremental.json (example)
+appsettings.json
+appsettings.cliente.json
+appsettings.*.local.json
+
+# Test / local scripts with hardcoded paths
+test-workflow.ps1
+QUICKSTART_INCREMENTAL.bat
+
+# Internal planning docs
+ROADMAP-NEXT-SESSION.md
+AGENTS.md

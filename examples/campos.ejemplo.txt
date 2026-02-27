@@ -1,0 +1,9 @@
+# Campos del origen (uno por línea)
+# Líneas vacías y comentarios (# o //) se ignoran
+
+IdCliente
+NombreCompleto
+SaldoActual
+FechaActualizacion
+
+// Puedes agregar más campos aquí
