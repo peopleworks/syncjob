@@ -1003,7 +1003,11 @@ namespace SyncJob
             eg.AddRow("Incremental con RowVersion:",
                 "[grey]Ver appsettings: Incremental.Mode = RowVersion, TrackingColumn = RowVer[/]");
             eg.AddRow("Incremental con MERGE (Upsert):",
-                "[grey]Ver appsettings: Incremental.MergeStrategy = Upsert, PrimaryKeyColumns = [IdCliente][/]");
+                // Los corchetes van duplicados a proposito: Spectre.Console lee
+                // "[IdCliente]" como una etiqueta de estilo y revienta con
+                // "Could not find color or style 'IdCliente'". El comando
+                // examples fallaba SIEMPRE por esta linea.
+                "[grey]Ver appsettings: Incremental.MergeStrategy = Upsert, PrimaryKeyColumns = [[IdCliente]][/]");
 
             AnsiConsole.MarkupLine("[bold underline]Ejemplos[/]");
             AnsiConsole.Write(eg);
