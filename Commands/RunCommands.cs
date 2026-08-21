@@ -43,6 +43,16 @@ namespace SyncJob.Commands
         [CommandOption("--full-refresh")]
         public bool FullRefresh { get; set; }
 
+        // Mismas banderas que la ruta del JSON. Antes esta ruta no evaluaba el
+        // umbral en absoluto, asi que tampoco tenia como reaccionar a el.
+        [Description("Forzar commit aunque filas < MinRowThresholdToCommit (no recomendado)")]
+        [CommandOption("--force-commit")]
+        public bool ForceCommit { get; set; }
+
+        [Description("Omitir el commit si filas < MinRowThresholdToCommit, en vez de abortar")]
+        [CommandOption("--skip-commit")]
+        public bool SkipCommit { get; set; }
+
         [Description("Limitar filas a leer del origen (testing)")]
         [CommandOption("--top <N>")]
         public int? Top { get; set; }
@@ -428,8 +438,9 @@ namespace SyncJob.Commands
                 throw new ArgumentException("Destination config inválido");
             if (cfg.Options == null)
                 throw new ArgumentException("Options config inválido");
+            // Igual que la ruta del JSON: si no hay mappings, se deducen del origen.
             if (cfg.ColumnMappings == null || cfg.ColumnMappings.Count == 0)
-                throw new ArgumentException("ColumnMappings vacío");
+                SyncJob.Program.AutoMapearColumnas(cfg);
 
             if (string.IsNullOrWhiteSpace(cfg.Source.Query) && string.IsNullOrWhiteSpace(cfg.Source.StoredProcedure))
                 throw new ArgumentException("Source.Query o Source.StoredProcedure requerido");
@@ -474,9 +485,16 @@ namespace SyncJob.Commands
             // Escribir a destino
             if (settings.Direct)
             {
+                if(!SyncJob.Program.PuedeCommitear(config, data.Rows.Count, settings.ForceCommit, settings.SkipCommit))
+                {
+                    AnsiConsole.MarkupLine(
+                        $"[yellow]⚠[/] {data.Rows.Count:N0} filas < MinRowThresholdToCommit. No se escribió en Final.");
+                    return result;
+                }
+
                 AnsiConsole.Status().Start("Escribiendo directamente a tabla Final...", ctx =>
                 {
-                    LoadFinalDirect(config, data, settings.Append);
+                    SyncJob.Program.LoadFinalDirect(config, data, settings.Append);
                 });
                 result.RowsInserted = data.Rows.Count;
                 AnsiConsole.MarkupLine($"[green]✓[/] Escritas [bold]{data.Rows.Count:N0}[/] filas a tabla Final");
@@ -485,13 +503,25 @@ namespace SyncJob.Commands
             {
                 AnsiConsole.Status().Start("Cargando Stage en paralelo...", ctx =>
                 {
-                    LoadStageInParallel(config, data);
+                    SyncJob.Program.LoadStageInParallel(config, data);
                 });
                 AnsiConsole.MarkupLine($"[green]✓[/] Stage cargado con [bold]{data.Rows.Count:N0}[/] filas");
 
+                // El umbral se evalua ANTES de tocar la tabla final. Esta ruta
+                // (run-db, la que usa el Windows Service) no lo hacia: iba
+                // directo al commit. Un origen roto devolviendo pocas filas
+                // truncaba el destino y lo dejaba casi vacio.
+                if(!SyncJob.Program.PuedeCommitear(config, data.Rows.Count, settings.ForceCommit, settings.SkipCommit))
+                {
+                    AnsiConsole.MarkupLine(
+                        $"[yellow]⚠[/] {data.Rows.Count:N0} filas < MinRowThresholdToCommit " +
+                        $"({config.Options?.MinRowThresholdToCommit}). Se omitió el commit; la tabla final quedó intacta.");
+                    return result;
+                }
+
                 AnsiConsole.Status().Start("Commit Stage → Final...", ctx =>
                 {
-                    CommitStageToFinal(config, data.Rows.Count, settings.Append);
+                    SyncJob.Program.CommitStageToFinal(config, data.Rows.Count, settings.Append);
                 });
                 result.RowsInserted = data.Rows.Count;
                 AnsiConsole.MarkupLine($"[green]✓[/] Commit completado");
@@ -576,142 +606,9 @@ namespace SyncJob.Commands
             return package;
         }
 
-        private static void LoadStageInParallel(SyncConfig cfg, SourceDataPackage data)
-        {
-            using (var conn = new SqlConnection(cfg.Destination!.ConnectionString))
-            {
-                conn.Open();
-                using var cmd = new SqlCommand($"TRUNCATE TABLE {cfg.Destination.StageTable};", conn);
-                cmd.ExecuteNonQuery();
-            }
 
-            var stageSchema = GetStageSchema(cfg);
-            var destToSourceIndex = BuildDestToSourceIndex(cfg, data.SourceColumnNames);
-            var batches = SplitIntoBatches(data.Rows, cfg.Options!.BatchSize);
 
-            var bulkOptions = cfg.Options.KeepIdentity
-                ? SqlBulkCopyOptions.KeepIdentity | SqlBulkCopyOptions.TableLock
-                : SqlBulkCopyOptions.TableLock;
 
-            System.Threading.Tasks.Parallel.ForEach(
-                batches,
-                new System.Threading.Tasks.ParallelOptions { MaxDegreeOfParallelism = cfg.Options.MaxDegreeOfParallelism },
-                batch =>
-                {
-                    using var conn = new SqlConnection(cfg.Destination.ConnectionString);
-                    conn.Open();
-
-                    var dt = BuildDataTableForBatch(stageSchema, destToSourceIndex, batch);
-
-                    using var bulk = new SqlBulkCopy(conn, bulkOptions, null)
-                    {
-                        DestinationTableName = cfg.Destination.StageTable,
-                        BulkCopyTimeout = cfg.Options.BulkCopyTimeoutSeconds,
-                        BatchSize = cfg.Options.BatchSize
-                    };
-
-                    foreach (var map in cfg.ColumnMappings!)
-                    {
-                        if (!string.IsNullOrWhiteSpace(map.Dest))
-                            bulk.ColumnMappings.Add(map.Dest, map.Dest);
-                    }
-
-                    bulk.WriteToServer(dt);
-                });
-        }
-
-        private static void LoadFinalDirect(SyncConfig cfg, SourceDataPackage data, bool append)
-        {
-            using (var conn = new SqlConnection(cfg.Destination!.ConnectionString))
-            {
-                conn.Open();
-                if (!append)
-                {
-                    using var cmd = new SqlCommand($"TRUNCATE TABLE {cfg.Destination.FinalTable};", conn);
-                    cmd.ExecuteNonQuery();
-                }
-            }
-
-            var finalSchema = GetFinalSchema(cfg);
-            var destToSourceIndex = BuildDestToSourceIndex(cfg, data.SourceColumnNames);
-            var batches = SplitIntoBatches(data.Rows, cfg.Options!.BatchSize);
-
-            var bulkOptions = cfg.Options.KeepIdentity
-                ? SqlBulkCopyOptions.KeepIdentity | SqlBulkCopyOptions.TableLock
-                : SqlBulkCopyOptions.TableLock;
-
-            System.Threading.Tasks.Parallel.ForEach(
-                batches,
-                new System.Threading.Tasks.ParallelOptions { MaxDegreeOfParallelism = cfg.Options.MaxDegreeOfParallelism },
-                batch =>
-                {
-                    using var conn = new SqlConnection(cfg.Destination.ConnectionString);
-                    conn.Open();
-
-                    var dt = BuildDataTableForBatch(finalSchema, destToSourceIndex, batch);
-
-                    using var bulk = new SqlBulkCopy(conn, bulkOptions, null)
-                    {
-                        DestinationTableName = cfg.Destination.FinalTable,
-                        BulkCopyTimeout = cfg.Options.BulkCopyTimeoutSeconds,
-                        BatchSize = cfg.Options.BatchSize
-                    };
-
-                    foreach (var map in cfg.ColumnMappings!)
-                    {
-                        if (!string.IsNullOrWhiteSpace(map.Dest))
-                            bulk.ColumnMappings.Add(map.Dest, map.Dest);
-                    }
-
-                    bulk.WriteToServer(dt);
-                });
-        }
-
-        private static void CommitStageToFinal(SyncConfig cfg, int rowCount, bool append)
-        {
-            using var conn = new SqlConnection(cfg.Destination!.ConnectionString);
-            conn.Open();
-            using var tran = conn.BeginTransaction();
-
-            try
-            {
-                int stageCount;
-                using (var cmd = new SqlCommand($"SELECT COUNT(*) FROM {cfg.Destination.StageTable};", conn, tran))
-                {
-                    stageCount = (int)cmd.ExecuteScalar();
-                }
-
-                if (stageCount != rowCount)
-                    throw new Exception($"Rowcount mismatch: stage={stageCount} vs read={rowCount}");
-
-                string swapSql = append
-                    ? $"INSERT INTO {cfg.Destination.FinalTable} SELECT * FROM {cfg.Destination.StageTable};"
-                    : $"TRUNCATE TABLE {cfg.Destination.FinalTable}; INSERT INTO {cfg.Destination.FinalTable} SELECT * FROM {cfg.Destination.StageTable};";
-
-                using (var cmd = new SqlCommand(swapSql, conn, tran))
-                {
-                    cmd.ExecuteNonQuery();
-                }
-
-                tran.Commit();
-            }
-            catch
-            {
-                try { tran.Rollback(); } catch { }
-                throw;
-            }
-        }
-
-        private static DataTable GetStageSchema(SyncConfig cfg)
-        {
-            using var conn = new SqlConnection(cfg.Destination!.ConnectionString);
-            conn.Open();
-            using var cmd = new SqlCommand($"SELECT TOP 0 * FROM {cfg.Destination.StageTable};", conn);
-            using var adapter = new SqlDataAdapter(cmd);
-            var dt = new DataTable();
-            adapter.Fill(dt);
-            return dt;
-        }
 
         private static DataTable GetFinalSchema(SyncConfig cfg)
         {
@@ -724,18 +621,6 @@ namespace SyncJob.Commands
             return dt;
         }
 
-        private static Dictionary<string, int> BuildDestToSourceIndex(SyncConfig cfg, string[] sourceColumns)
-        {
-            var map = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-            foreach (var m in cfg.ColumnMappings!)
-            {
-                int idx = Array.FindIndex(sourceColumns, c => c.Equals(m.Source, StringComparison.OrdinalIgnoreCase));
-                if (idx == -1)
-                    throw new Exception($"Columna origen '{m.Source}' no encontrada");
-                map[m.Dest] = idx;
-            }
-            return map;
-        }
 
         private static IEnumerable<List<object[]>> SplitIntoBatches(List<object[]> rows, int batchSize)
         {

@@ -6,6 +6,7 @@ using Microsoft.Extensions.Logging;
 using Spectre.Console;
 using Spectre.Console.Cli;
 using SyncJob.Commands;
+using SyncJob.Security;
 using SyncJob.Services;
 using System;
 using System.Collections.Generic;
@@ -194,6 +195,14 @@ namespace SyncJob
         [Description("Inicializar tabla de tracking incremental")]
         [CommandOption("--init-tracking")]
         public bool InitTracking { get; set; }
+
+        [Description("Ejecutar TODAS las secciones del archivo, en orden")]
+        [CommandOption("--all")]
+        public bool All { get; set; }
+
+        [Description("Con --all: seguir con las demás secciones aunque una falle")]
+        [CommandOption("--continue-on-error")]
+        public bool ContinueOnError { get; set; }
     }
 
     public sealed class ValidateSettings : ConfigSettings
@@ -334,6 +343,18 @@ namespace SyncJob
                         .WithDescription("Genera appsettings desde lista de campos");
                     config.AddCommand<ExamplesCommand>("examples").WithDescription("Muestra ejemplos de uso");
 
+                    config.AddBranch("secrets", sec =>
+                    {
+                        sec.SetDescription("Cifrado de contraseñas del appsettings.json (DPAPI)");
+                        sec.AddCommand<SecretsProtectCommand>("protect")
+                           .WithDescription("Cifra las contraseñas del archivo")
+                           .WithExample(new[] { "secrets", "protect", "-c", "appsettings.json" })
+                           .WithExample(new[] { "secrets", "protect", "-c", "appsettings.json", "--scope", "machine" });
+                        sec.AddCommand<SecretsStatusCommand>("status")
+                           .WithDescription("Muestra qué contraseñas están cifradas y cuáles no")
+                           .WithExample(new[] { "secrets", "status", "-c", "appsettings.json" });
+                    });
+
                     // ============================================
                     // NEW COMMANDS (SQLite-based)
                     // ============================================
@@ -455,6 +476,66 @@ namespace SyncJob
                         PrintExamples();
                         return 0;
                     }
+
+                    // --all: se corre una seccion por vez reusando este mismo
+                    // comando. Nada de logica paralela que despues se bifurque
+                    // de la ruta normal, que es exactamente el problema que
+                    // tenia el commit duplicado.
+                    if(settings.All)
+                    {
+                        var secciones = ListarSecciones(settings.ConfigPath);
+                        AnsiConsole.MarkupLine(
+                            $"[cyan]→[/] {secciones.Count} secciones: [bold]{string.Join(", ", secciones)}[/]");
+
+                        var fallidas = new List<string>();
+                        foreach(var s in secciones)
+                        {
+                            AnsiConsole.MarkupLine($"\n[cyan]═══ {s} ═══[/]");
+                            var unaSola = new RunSettings
+                            {
+                                ConfigPath = settings.ConfigPath,
+                                Section = s,
+                                DryRun = settings.DryRun,
+                                Direct = settings.Direct,
+                                Append = settings.Append,
+                                FullRefresh = settings.FullRefresh,
+                                InitTracking = settings.InitTracking,
+                                ForceCommit = settings.ForceCommit,
+                                SkipCommit = settings.SkipCommit,
+                                All = false
+                            };
+
+                            int codigo;
+                            try { codigo = Execute(context, unaSola); }
+                            catch(Exception ex)
+                            {
+                                Log.Error($"Section '{s}' failed: {ex.Message}", evt: "run.all.section.error");
+                                AnsiConsole.MarkupLine($"[red]✗[/] {s}: {Markup.Escape(ex.Message)}");
+                                codigo = 1;
+                            }
+
+                            if(codigo != 0)
+                            {
+                                fallidas.Add(s);
+                                if(!settings.ContinueOnError)
+                                {
+                                    AnsiConsole.MarkupLine(
+                                        $"[red]✗[/] Se detuvo en '{s}'. Use --continue-on-error para seguir con las demás.");
+                                    return 1;
+                                }
+                            }
+                        }
+
+                        if(fallidas.Count > 0)
+                        {
+                            AnsiConsole.MarkupLine($"\n[red]✗[/] Fallaron: [bold]{string.Join(", ", fallidas)}[/]");
+                            return 1;
+                        }
+
+                        AnsiConsole.MarkupLine($"\n[green]✓[/] {secciones.Count} secciones sincronizadas");
+                        return 0;
+                    }
+
                     var cfg = LoadConfig(settings.ConfigPath, settings.Section);
                     ApplyOverrides(cfg, settings);
                     ValidateConfig(cfg, settings.Direct);
@@ -1108,7 +1189,53 @@ namespace SyncJob
                 new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
             if(root == null || !root.TryGetValue(section, out var cfg) || cfg == null)
                 throw new Exception($"No se encontró la sección '{section}' en {path}");
+
+            // Descifrado transparente: si las claves vienen marcadas con enc:,
+            // se abren aqui y el resto del programa nunca se entera. Un archivo
+            // en texto plano pasa sin cambios, asi que adoptar el cifrado no
+            // obliga a migrar nada de golpe.
+            if(cfg.Source != null)
+                cfg.Source.ConnectionString =
+                    SecretProtector.DescifrarClaveDeConexion(cfg.Source.ConnectionString ?? string.Empty);
+            if(cfg.Destination != null)
+                cfg.Destination.ConnectionString =
+                    SecretProtector.DescifrarClaveDeConexion(cfg.Destination.ConnectionString ?? string.Empty);
+
             return cfg;
+        }
+
+        /// <summary>
+        /// Todas las secciones sincronizables del archivo, en el orden en que
+        /// estan escritas. Una seccion cuenta si tiene Source y Destination:
+        /// asi se ignoran bloques de configuracion que no son sincronizaciones
+        /// (ConnectionStrings, AIProxySettings, Logging y demas).
+        ///
+        /// Existe para poder correr un archivo completo de una vez. Con seis
+        /// secciones, encadenarlas a mano en un script es justo el tipo de cosa
+        /// donde se olvida una y nadie se entera.
+        /// </summary>
+        static List<string> ListarSecciones(string path)
+        {
+            var json = File.ReadAllText(path);
+            using var doc = JsonDocument.Parse(json);
+            var secciones = new List<string>();
+
+            foreach(var prop in doc.RootElement.EnumerateObject())
+            {
+                if(prop.Value.ValueKind != JsonValueKind.Object) continue;
+
+                bool tieneOrigen = prop.Value.TryGetProperty("Source", out var s)
+                                   && s.ValueKind == JsonValueKind.Object;
+                bool tieneDestino = prop.Value.TryGetProperty("Destination", out var d)
+                                    && d.ValueKind == JsonValueKind.Object;
+
+                if(tieneOrigen && tieneDestino) secciones.Add(prop.Name);
+            }
+
+            if(secciones.Count == 0)
+                throw new Exception($"No se encontró ninguna sección con Source y Destination en {path}");
+
+            return secciones;
         }
 
         static List<string> ReadFieldsFile(string path)
@@ -1182,6 +1309,63 @@ namespace SyncJob
             File.WriteAllText(outputPath, jsonOut);
         }
 
+        /// <summary>
+        /// Deduce los ColumnMappings 1:1 leyendo el esquema del origen.
+        ///
+        /// Se usa CommandBehavior.SchemaOnly: SQL Server devuelve los metadatos
+        /// del resultado SIN ejecutar la consulta, asi que no cuesta nada aunque
+        /// el origen sean millones de filas.
+        ///
+        /// Se llama solo cuando la lista viene vacia. Declararla a mano sigue
+        /// siendo valido y necesario cuando los nombres difieren entre origen y
+        /// destino, o cuando se quiere mover un subconjunto de columnas.
+        /// </summary>
+        internal static void AutoMapearColumnas(SyncConfig cfg)
+        {
+            if(cfg.Source == null || string.IsNullOrWhiteSpace(cfg.Source.ConnectionString))
+                throw new ArgumentException("No se pueden deducir las columnas: falta Source.ConnectionString.");
+
+            using var conn = new SqlConnection(cfg.Source.ConnectionString);
+            conn.Open();
+
+            using var cmd = conn.CreateCommand();
+            if(!string.IsNullOrWhiteSpace(cfg.Source.StoredProcedure))
+            {
+                cmd.CommandText = cfg.Source.StoredProcedure;
+                cmd.CommandType = CommandType.StoredProcedure;
+            }
+            else
+            {
+                cmd.CommandText = cfg.Source.Query;
+                cmd.CommandType = CommandType.Text;
+            }
+
+            var columnas = new List<string>();
+            using(var rd = cmd.ExecuteReader(CommandBehavior.SchemaOnly))
+            {
+                for(int i = 0; i < rd.FieldCount; i++)
+                {
+                    string nombre = rd.GetName(i);
+                    if(string.IsNullOrWhiteSpace(nombre))
+                        throw new ArgumentException(
+                            $"La columna {i + 1} del origen no tiene nombre. Póngale un alias o " +
+                            "declare los ColumnMappings a mano.");
+                    columnas.Add(nombre);
+                }
+            }
+
+            if(columnas.Count == 0)
+                throw new ArgumentException("El origen no devolvió columnas; no hay nada que mapear.");
+
+            cfg.ColumnMappings = columnas
+                .Select(c => new ColumnMap { Source = c, Dest = c })
+                .ToList();
+
+            Log.Info($"ColumnMappings deducidos del origen: {columnas.Count} columnas", evt: "config.automap");
+            AnsiConsole.MarkupLine(
+                $"[cyan]→[/] ColumnMappings deducidos del origen: [bold]{columnas.Count}[/] columnas");
+        }
+
         static void ValidateConfig(SyncConfig cfg, bool directMode = false)
         {
             if(cfg.Source == null)
@@ -1190,8 +1374,13 @@ namespace SyncJob
                 throw new ArgumentException("Missing Destination config.");
             if(cfg.Options == null)
                 throw new ArgumentException("Missing Options config.");
+            // ColumnMappings vacio ya no es un error: se deducen del origen.
+            // Escribir a mano una lista de 30 columnas es justo donde se cuela
+            // una errata que nadie ve hasta que los datos salen corridos.
+            // Se sigue pudiendo declarar la lista cuando los nombres difieren
+            // entre origen y destino, o cuando se quiere mover solo algunas.
             if(cfg.ColumnMappings == null || cfg.ColumnMappings.Count == 0)
-                throw new ArgumentException("ColumnMappings es obligatorio y no puede estar vacío.");
+                AutoMapearColumnas(cfg);
 
             if(string.IsNullOrWhiteSpace(cfg.Source.ConnectionString))
                 throw new ArgumentException("Source.ConnectionString vacío.");
@@ -1366,7 +1555,7 @@ namespace SyncJob
             return dict;
         }
 
-        static void LoadStageInParallel(SyncConfig cfg, SourceDataPackage data)
+        internal static void LoadStageInParallel(SyncConfig cfg, SourceDataPackage data)
         {
             if(cfg.Destination == null)
                 throw new ArgumentNullException(nameof(cfg.Destination));
@@ -1465,7 +1654,7 @@ namespace SyncJob
             return dt;
         }
 
-        static void LoadFinalDirect(SyncConfig cfg, SourceDataPackage data, bool append)
+        internal static void LoadFinalDirect(SyncConfig cfg, SourceDataPackage data, bool append)
         {
             if(cfg.Destination == null)
                 throw new ArgumentNullException(nameof(cfg.Destination));
@@ -1639,7 +1828,135 @@ namespace SyncJob
             return dt;
         }
 
-        static void CommitStageToFinal(SyncConfig cfg, int rowCount, bool append)
+        /// <summary>
+        /// Decide si se puede commitear segun MinRowThresholdToCommit.
+        ///
+        /// Vive aqui, y no dentro de cada comando, porque antes estaba escrito
+        /// SOLO en la ruta del JSON: el camino run-db (el que usa el Windows
+        /// Service) llamaba directo al commit y el umbral nunca se evaluaba.
+        /// Un origen roto devolviendo 3 filas truncaba la tabla final y dejaba
+        /// 3. El seguro estaba configurado, se mostraba en pantalla y no hacia
+        /// nada, que es peor que no tenerlo porque uno confia.
+        /// </summary>
+        /// <returns>true si hay que commitear, false si se omite el commit.</returns>
+        internal static bool PuedeCommitear(SyncConfig cfg, int filas, bool forzar, bool omitir)
+        {
+            int minimo = cfg.Options?.MinRowThresholdToCommit ?? 0;
+            if(filas >= minimo) return true;
+
+            if(forzar)
+            {
+                Log.Warn($"Forcing commit with rows={filas} < min={minimo}", evt: "run.commit.force");
+                return true;
+            }
+
+            if(omitir)
+            {
+                Log.Warn($"Skipping commit with rows={filas} < min={minimo}", evt: "run.commit.skip");
+                return false;
+            }
+
+            Log.Warn($"Abort: rows={filas} < min={minimo}", evt: "run.abort.min");
+            throw new Exception(
+                $"Filas ({filas}) < MinRowThresholdToCommit ({minimo}). Abortado.");
+        }
+
+        /// <summary>
+        /// Lista explicita de columnas del destino, tomada de los ColumnMappings.
+        ///
+        /// Antes el swap era "INSERT INTO final SELECT * FROM stage", sin lista.
+        /// Mientras las dos tablas se generen juntas eso funciona, pero el dia
+        /// que alguien agregue una columna a una sola de las dos, los datos
+        /// entran CORRIDOS y en silencio: SQL Server no se queja mientras los
+        /// tipos sean compatibles. Con la lista explicita, el mismo caso falla
+        /// de inmediato y con nombre y apellido.
+        /// </summary>
+        internal static string ListaColumnasDestino(SyncConfig cfg)
+        {
+            if(cfg.ColumnMappings == null || cfg.ColumnMappings.Count == 0)
+                throw new ArgumentException("ColumnMappings vacío. Es obligatorio.");
+
+            return string.Join(", ", cfg.ColumnMappings
+                .Where(m => !string.IsNullOrWhiteSpace(m.Dest))
+                .Select(m => "[" + m.Dest!.Replace("]", "]]") + "]"));
+        }
+
+        /// <summary>
+        /// Parte un nombre de dos partes en esquema y tabla. Sin esquema, dbo.
+        /// </summary>
+        private static (string Esquema, string Objeto) PartirNombre(string nombre)
+        {
+            string limpio = nombre.Replace("[", string.Empty).Replace("]", string.Empty).Trim();
+            int punto = limpio.LastIndexOf('.');
+            return punto < 0
+                ? ("dbo", limpio)
+                : (limpio.Substring(0, punto), limpio.Substring(punto + 1));
+        }
+
+        /// <summary>
+        /// El intercambio de nombres solo sirve si Stage y Final son TABLAS de
+        /// verdad y viven en el mismo esquema (sp_rename no mueve objetos de un
+        /// esquema a otro). Si no se cumple, se usa el camino de siempre.
+        /// </summary>
+        private static bool IntercambioPorNombreDisponible(SyncConfig cfg, SqlConnection conn, SqlTransaction tran)
+        {
+            try
+            {
+                var final = PartirNombre(cfg.Destination!.FinalTable!);
+                var stage = PartirNombre(cfg.Destination.StageTable!);
+
+                if(!string.Equals(final.Esquema, stage.Esquema, StringComparison.OrdinalIgnoreCase))
+                    return false;
+
+                const string sql = @"
+SELECT SUM(CASE WHEN t.name IS NULL THEN 0 ELSE 1 END)
+FROM   (VALUES (@f), (@s)) AS n(nombre)
+LEFT   JOIN sys.tables t
+       ON t.name = n.nombre AND SCHEMA_NAME(t.schema_id) = @e";
+
+                using var cmd = new SqlCommand(sql, conn, tran);
+                cmd.Parameters.AddWithValue("@f", final.Objeto);
+                cmd.Parameters.AddWithValue("@s", stage.Objeto);
+                cmd.Parameters.AddWithValue("@e", final.Esquema);
+                object? r = cmd.ExecuteScalar();
+                return r != null && r != DBNull.Value && Convert.ToInt32(r) == 2;
+            }
+            catch
+            {
+                return false;   // ante la duda, el camino conocido
+            }
+        }
+
+        /// <summary>
+        /// Intercambia Stage y Final por nombre. Los datos nuevos ya estan en
+        /// Stage, asi que despues del intercambio Final los tiene y Stage queda
+        /// con los viejos, listo para que la proxima corrida lo trunque.
+        ///
+        /// sp_rename NO renombra los indices ni las restricciones que cuelgan de
+        /// la tabla, pero eso no importa aqui: las dos tablas se generan con la
+        /// misma forma y lo que se intercambia es a que nombre responde cada una.
+        /// </summary>
+        private static void IntercambiarTablas(SyncConfig cfg, SqlConnection conn, SqlTransaction tran)
+        {
+            var final = PartirNombre(cfg.Destination!.FinalTable!);
+            var stage = PartirNombre(cfg.Destination.StageTable!);
+            string temporal = final.Objeto + "_swap_" + Guid.NewGuid().ToString("N").Substring(0, 8);
+
+            void Renombrar(string desde, string hacia)
+            {
+                using var cmd = new SqlCommand("sp_rename", conn, tran) { CommandType = CommandType.StoredProcedure };
+                cmd.Parameters.AddWithValue("@objname", $"[{final.Esquema}].[{desde}]");
+                cmd.Parameters.AddWithValue("@newname", hacia);
+                cmd.Parameters.AddWithValue("@objtype", "OBJECT");
+                cmd.ExecuteNonQuery();
+            }
+
+            Renombrar(final.Objeto, temporal);      // Final   -> temporal
+            Renombrar(stage.Objeto, final.Objeto);  // Stage   -> Final   (datos nuevos ya publicados)
+            Renombrar(temporal, stage.Objeto);      // temporal-> Stage   (datos viejos, se descartan luego)
+        }
+
+        internal static void CommitStageToFinal(SyncConfig cfg, int rowCount, bool append)
         {
             using(var destConn = new SqlConnection(cfg.Destination!.ConnectionString))
             {
@@ -1682,16 +1999,50 @@ namespace SyncJob
                             throw new Exception(
                                 $"Rowcount mismatch: stage={stageCount} vs leído={rowCount}. Abortando swap.");
 
-                        string swapSql = append
-                            ? $@"INSERT INTO {cfg.Destination.FinalTable}
-                                SELECT * FROM {cfg.Destination.StageTable};"
-                            : $@"TRUNCATE TABLE {cfg.Destination.FinalTable};
-                                INSERT INTO {cfg.Destination.FinalTable}
-                                SELECT * FROM {cfg.Destination.StageTable};";
+                        string columnas = ListaColumnasDestino(cfg);
 
-                        using(var cmdSwap = new SqlCommand(swapSql, destConn, tran))
+                        // APPEND siempre copia fila por fila: hay datos previos
+                        // que conservar y no se puede intercambiar la tabla.
+                        //
+                        // REEMPLAZO COMPLETO: antes era TRUNCATE + INSERT dentro
+                        // de la transaccion. TRUNCATE toma un lock de esquema
+                        // (Sch-M) que se mantiene hasta el commit, y contra ese
+                        // lock hasta un lector con NOLOCK se bloquea. Con 122 mil
+                        // filas eso fueron ~15 segundos con el dashboard colgado.
+                        // De noche no se nota; sincronizando varias veces al dia,
+                        // con alguien mirando, si.
+                        //
+                        // Ahora se intercambian los NOMBRES de las tablas: es una
+                        // operacion de metadatos, dura milisegundos, y los datos
+                        // ya estaban escritos en Stage desde antes. De paso queda
+                        // mas seguro: si algo falla, la tabla anterior sigue
+                        // entera y la transaccion la devuelve a su lugar.
+                        if(append)
                         {
-                            cmdSwap.ExecuteNonQuery();
+                            string sqlAppend =
+                                $@"INSERT INTO {cfg.Destination.FinalTable} ({columnas})
+                                   SELECT {columnas} FROM {cfg.Destination.StageTable};";
+                            using(var cmdAppend = new SqlCommand(sqlAppend, destConn, tran))
+                                cmdAppend.ExecuteNonQuery();
+                        }
+                        else if(IntercambioPorNombreDisponible(cfg, destConn, tran))
+                        {
+                            IntercambiarTablas(cfg, destConn, tran);
+                            Log.Info("Swap por intercambio de nombres (sin TRUNCATE)", evt: "dest.swap.rename");
+                        }
+                        else
+                        {
+                            // Camino anterior, para cuando el intercambio no
+                            // aplica (Final es una vista, o esta en otro esquema
+                            // que Stage). Se conserva para no romper nada que ya
+                            // estuviera funcionando asi.
+                            string sqlTruncate =
+                                $@"TRUNCATE TABLE {cfg.Destination.FinalTable};
+                                   INSERT INTO {cfg.Destination.FinalTable} ({columnas})
+                                   SELECT {columnas} FROM {cfg.Destination.StageTable};";
+                            using(var cmdSwap = new SqlCommand(sqlTruncate, destConn, tran))
+                                cmdSwap.ExecuteNonQuery();
+                            Log.Info("Swap por TRUNCATE + INSERT", evt: "dest.swap.truncate");
                         }
 
                         tran.Commit();
