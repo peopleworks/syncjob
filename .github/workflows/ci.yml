@@ -1,0 +1,172 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Restore
+        run: dotnet restore SyncJob.csproj
+
+      - name: Build
+        run: dotnet build SyncJob.csproj -c Release --no-restore
+
+      - name: Pack (verify the tool package builds)
+        run: dotnet pack SyncJob.csproj -c Release -o ./artifacts
+
+  integration:
+    name: real sync against SQL Server
+    runs-on: ubuntu-latest
+
+    services:
+      sqlserver:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: 'Y'
+          MSSQL_SA_PASSWORD: Str0ng!Passw0rd#CI
+        ports:
+          - 1433:1433
+
+    env:
+      SA_PASSWORD: Str0ng!Passw0rd#CI
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Build
+        run: dotnet build SyncJob.csproj -c Release
+
+      # El contenedor se reporta sano antes de que SQL Server termine de
+      # arrancar, asi que se sondea de verdad en vez de confiar en el estado.
+      - name: Wait for SQL Server
+        run: |
+          for i in $(seq 1 30); do
+            if docker run --rm --network host mcr.microsoft.com/mssql-tools18 \
+                 /opt/mssql-tools18/bin/sqlcmd -S localhost,1433 -U sa -P "$SA_PASSWORD" -C \
+                 -Q "SELECT 1" > /dev/null 2>&1; then
+              echo "SQL Server up after ${i} attempt(s)."
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "SQL Server never became reachable." >&2
+          exit 1
+
+      - name: Create source and destination
+        run: |
+          docker run --rm --network host mcr.microsoft.com/mssql-tools18 \
+            /opt/mssql-tools18/bin/sqlcmd -S localhost,1433 -U sa -P "$SA_PASSWORD" -C -b -Q "
+              CREATE DATABASE SyncSrc;
+              CREATE DATABASE SyncDst;"
+
+          docker run --rm --network host mcr.microsoft.com/mssql-tools18 \
+            /opt/mssql-tools18/bin/sqlcmd -S localhost,1433 -U sa -P "$SA_PASSWORD" -C -b -d SyncSrc -Q "
+              CREATE TABLE dbo.Customer (Id int NOT NULL, Name nvarchar(100) NOT NULL, Total decimal(12,2) NULL);
+              INSERT INTO dbo.Customer (Id, Name, Total)
+              SELECT TOP 500 ROW_NUMBER() OVER (ORDER BY (SELECT NULL)),
+                             'Customer ' + CAST(ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS nvarchar(10)),
+                             ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) * 1.5
+              FROM sys.all_objects;"
+
+          # Stage y Final tienen que tener la MISMA forma: el commit publica
+          # intercambiando las tablas por nombre.
+          docker run --rm --network host mcr.microsoft.com/mssql-tools18 \
+            /opt/mssql-tools18/bin/sqlcmd -S localhost,1433 -U sa -P "$SA_PASSWORD" -C -b -d SyncDst -Q "
+              CREATE TABLE dbo.Customer       (Id int NOT NULL, Name nvarchar(100) NOT NULL, Total decimal(12,2) NULL);
+              CREATE TABLE dbo.Customer_Stage (Id int NOT NULL, Name nvarchar(100) NOT NULL, Total decimal(12,2) NULL);"
+
+      - name: Write the config
+        run: |
+          BASE="Server=localhost,1433;User Id=sa;Password=${SA_PASSWORD};Encrypt=True;TrustServerCertificate=True;"
+          cat > ci.json <<JSON
+          {
+            "CustomerSync": {
+              "Source": {
+                "ConnectionString": "${BASE}Database=SyncSrc;",
+                "Query": "SELECT Id, Name, Total FROM dbo.Customer"
+              },
+              "Destination": {
+                "ConnectionString": "${BASE}Database=SyncDst;",
+                "StageTable": "dbo.Customer_Stage",
+                "FinalTable": "dbo.Customer"
+              },
+              "Options": {
+                "BatchSize": 100,
+                "MaxDegreeOfParallelism": 2,
+                "BulkCopyTimeoutSeconds": 0,
+                "KeepIdentity": false,
+                "MinRowThresholdToCommit": 100
+              }
+            }
+          }
+          JSON
+
+      # ColumnMappings va deliberadamente ausente: esto comprueba que se
+      # deducen del origen.
+      - name: Validate (derives the column mappings)
+        run: dotnet bin/Release/net9.0/SyncJob.dll validate -c ci.json -s CustomerSync
+
+      - name: Run the sync
+        run: dotnet bin/Release/net9.0/SyncJob.dll run -c ci.json -s CustomerSync
+
+      - name: Assert the rows landed
+        run: |
+          COUNT=$(docker run --rm --network host mcr.microsoft.com/mssql-tools18 \
+            /opt/mssql-tools18/bin/sqlcmd -S localhost,1433 -U sa -P "$SA_PASSWORD" -C -d SyncDst -h -1 -W \
+            -Q "SET NOCOUNT ON; SELECT COUNT(*) FROM dbo.Customer" | tr -d '[:space:]')
+          echo "Final table holds: $COUNT"
+          [ "$COUNT" = "500" ] || { echo "Expected 500 rows, got $COUNT" >&2; exit 1; }
+
+      # Corriendo dos veces seguidas se ejerce el intercambio en ambos sentidos:
+      # tras el primer swap las tablas fisicas quedan cruzadas, y la segunda
+      # corrida tiene que dar el mismo resultado.
+      - name: Run again — the rename swap has to survive alternating
+        run: |
+          dotnet bin/Release/net9.0/SyncJob.dll run -c ci.json -s CustomerSync
+          COUNT=$(docker run --rm --network host mcr.microsoft.com/mssql-tools18 \
+            /opt/mssql-tools18/bin/sqlcmd -S localhost,1433 -U sa -P "$SA_PASSWORD" -C -d SyncDst -h -1 -W \
+            -Q "SET NOCOUNT ON; SELECT COUNT(*) FROM dbo.Customer" | tr -d '[:space:]')
+          [ "$COUNT" = "500" ] || { echo "After the second run expected 500, got $COUNT" >&2; exit 1; }
+
+      # La regresion que motivo la version 2.3.0: un origen roto NO puede
+      # vaciar el destino. Se pide TOP 5 contra un umbral de 100.
+      - name: A short source must abort and leave the destination untouched
+        run: |
+          sed 's|SELECT Id, Name, Total FROM dbo.Customer|SELECT TOP 5 Id, Name, Total FROM dbo.Customer|' ci.json > broken.json
+
+          if dotnet bin/Release/net9.0/SyncJob.dll run -c broken.json -s CustomerSync; then
+            echo "The run should have aborted below the threshold, but it succeeded." >&2
+            exit 1
+          fi
+          echo "Aborted as expected."
+
+          COUNT=$(docker run --rm --network host mcr.microsoft.com/mssql-tools18 \
+            /opt/mssql-tools18/bin/sqlcmd -S localhost,1433 -U sa -P "$SA_PASSWORD" -C -d SyncDst -h -1 -W \
+            -Q "SET NOCOUNT ON; SELECT COUNT(*) FROM dbo.Customer" | tr -d '[:space:]')
+          echo "Final table still holds: $COUNT"
+          [ "$COUNT" = "500" ] || { echo "The destination was damaged: $COUNT rows" >&2; exit 1; }
+
+      - name: --all walks every section
+        run: dotnet bin/Release/net9.0/SyncJob.dll run -c ci.json --all

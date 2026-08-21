@@ -1,0 +1,107 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Build
+        run: dotnet build SyncJob.csproj -c Release
+
+      # IncludeNativeLibrariesForSelfExtract es OBLIGATORIO aqui, no un adorno.
+      # Sin el, PublishSingleFile deja fuera Microsoft.Data.SqlClient.SNI.dll y
+      # e_sqlite3.dll, y el ejecutable revienta con DllNotFoundException en
+      # cuanto intenta abrir una conexion. Comprobado: el .exe solo, sin esas
+      # dos DLL al lado, no conecta.
+      - name: Publish self-contained Windows executable
+        run: >
+          dotnet publish SyncJob.csproj -c Release -r win-x64
+          --self-contained true
+          -p:PublishSingleFile=true
+          -p:EnableCompressionInSingleFile=true
+          -p:IncludeNativeLibrariesForSelfExtract=true
+          -o ./publish/win-x64
+
+      - name: Verify the published binary actually runs
+        shell: pwsh
+        run: |
+          # Se corre desde una carpeta VACIA, con el .exe solo. Es la unica forma
+          # de comprobar que no depende de nada que quedo en la de publicacion:
+          # eso es exactamente lo que le pasa a quien descarga el zip.
+          New-Item -ItemType Directory -Force -Path ./smoke | Out-Null
+          Copy-Item ./publish/win-x64/SyncJob.exe ./smoke/
+          Push-Location ./smoke
+          $version = & .\SyncJob.exe --version
+          if ($LASTEXITCODE -ne 0) { throw "El ejecutable no arranca (exit $LASTEXITCODE)" }
+          Write-Host "Version reportada: $version"
+          # 'examples' ejerce el arranque completo de la CLI sin tocar la red.
+          & .\SyncJob.exe examples | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "La CLI fallo al ejecutar 'examples' (exit $LASTEXITCODE)" }
+          Pop-Location
+
+      - name: Pack the .NET tool
+        run: dotnet pack SyncJob.csproj -c Release -o ./artifacts
+
+      - name: Zip the executable
+        shell: pwsh
+        run: |
+          Compress-Archive -Path ./publish/win-x64/SyncJob.exe `
+                           -DestinationPath ./artifacts/syncjob-win-x64.zip
+
+      - name: Create the GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ./artifacts/*.zip
+            ./artifacts/*.nupkg
+          generate_release_notes: true
+          body: |
+            ## SyncJob ${{ github.ref_name }}
+
+            **`syncjob-win-x64.zip`** — a single self-contained executable.
+            No .NET runtime to install, nothing else to copy next to it.
+
+            ```powershell
+            # Unzip, then:
+            .\SyncJob.exe validate -c appsettings.json -s MySync
+            .\SyncJob.exe run      -c appsettings.json --all
+            ```
+
+            Or install it as a .NET tool:
+
+            ```bash
+            dotnet tool install -g PeopleWorks.SyncJob
+            syncjob --version
+            ```
+
+            **Requires** SQL Server 2016+. Windows is required for Windows Service
+            mode and for DPAPI credential encryption.
+
+            Companion tool: [SQLDiff](https://github.com/peopleworks/SqlSchemaDiff)
+            moves the schema, SyncJob moves the data.
+
+      # Se publica a NuGet solo si el secreto existe. El contexto `secrets` no
+      # esta disponible en un `if` de paso, asi que el valor se lee via env,
+      # que si lo esta.
+      - name: Push to NuGet
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+        if: env.NUGET_API_KEY != ''
+        run: >
+          dotnet nuget push ./artifacts/*.nupkg
+          --api-key $env:NUGET_API_KEY
+          --source https://api.nuget.org/v3/index.json
+          --skip-duplicate

@@ -4,12 +4,14 @@
 
 **Move SQL Server data between databases — reliably, safely, and fast.**
 
-[![Version](https://img.shields.io/badge/version-2.3.0-blue?style=flat-square)](https://github.com/peopleworks/SyncJob/releases)
+[![CI](https://github.com/peopleworks/syncjob/actions/workflows/ci.yml/badge.svg)](https://github.com/peopleworks/syncjob/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/peopleworks/syncjob?label=release&logo=github)](https://github.com/peopleworks/syncjob/releases/latest)
+[![NuGet](https://img.shields.io/nuget/v/PeopleWorks.SyncJob?logo=nuget)](https://www.nuget.org/packages/PeopleWorks.SyncJob)
 [![.NET](https://img.shields.io/badge/.NET-9.0-512BD4?style=flat-square&logo=dotnet&logoColor=white)](https://dotnet.microsoft.com/)
 [![SQL Server](https://img.shields.io/badge/SQL%20Server-2016%2B-CC2927?style=flat-square&logo=microsoftsqlserver&logoColor=white)](https://www.microsoft.com/sql-server)
 [![Windows Service](https://img.shields.io/badge/Windows%20Service-ready-0078D4?style=flat-square&logo=windows&logoColor=white)](#windows-service-mode)
 [![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
-[![PeopleWorks](https://img.shields.io/badge/by-PeopleWorks-636f61?style=flat-square)](https://github.com/peopleworks)
+[![PeopleWorks](https://img.shields.io/badge/by-PeopleWorks-636f61?style=flat-square)](https://mvp.microsoft.com/en-US/mvp/profile/24060a02-dbc6-44ec-bca5-c213ff9835c5)
 
 </div>
 
@@ -59,6 +61,37 @@ That distinction drives every design decision here:
 - .NET 9 Runtime (to run) / .NET 9 SDK (to build)
 - SQL Server 2016 or later (source and/or destination)
 - Windows (for Windows Service mode and DPAPI password encryption)
+
+---
+
+## Install
+
+**Download the binary** — a single self-contained executable, no .NET runtime to install:
+
+> [**⬇ Latest release**](https://github.com/peopleworks/syncjob/releases/latest) → `syncjob-win-x64.zip`
+
+```powershell
+.\SyncJob.exe --version
+```
+
+**Or install it as a .NET tool:**
+
+```bash
+dotnet tool install -g PeopleWorks.SyncJob
+syncjob --version
+```
+
+**Or build from source:**
+
+```bash
+git clone https://github.com/peopleworks/syncjob.git
+cd syncjob
+dotnet publish SyncJob.csproj -c Release -r win-x64 --self-contained true   -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o ./publish
+```
+
+> `IncludeNativeLibrariesForSelfExtract` is not optional. Without it the single file leaves
+> out `Microsoft.Data.SqlClient.SNI.dll` and `e_sqlite3.dll`, and the executable throws
+> `DllNotFoundException` the moment it opens a connection.
 
 ---
 
@@ -664,7 +697,8 @@ Pull requests are welcome. For major changes, open an issue first to discuss the
 
 ### Built by PeopleWorks
 
-Created by **Pedro Hernández** ([PeopleWorks](https://github.com/peopleworks)) · *Microsoft MVP for .NET*
+Created by **Pedro Hernández — PeopleWorks**,
+[Microsoft MVP for .NET](https://mvp.microsoft.com/en-US/mvp/profile/24060a02-dbc6-44ec-bca5-c213ff9835c5)
 
 Built with [.NET 9](https://dotnet.microsoft.com/) · [Spectre.Console](https://spectreconsole.net/) · [Microsoft.Data.SqlClient](https://github.com/dotnet/SqlClient)
 
