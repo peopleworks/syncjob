@@ -1,0 +1,209 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 600" width="1200" height="600"
+     role="img" aria-labelledby="syncjob-hero-title syncjob-hero-desc">
+  <title id="syncjob-hero-title">PeopleWorks SyncJob — SQL Server data sync with a staged, guarded commit</title>
+  <desc id="syncjob-hero-desc">Pipeline diagram. A source SQL Server is read with a SELECT query, a stored procedure, or an incremental filter such as RowVer greater than the last watermark. Rows are streamed with SqlBulkCopy in batches, with a configurable degree of parallelism, KeepIdentity, and a dry-run mode that writes nothing. They land in a stage table, so a failed load never touches the published table. Before publishing, MinRowThresholdToCommit compares the row count against the threshold: rows greater than or equal to the threshold commits, fewer rows aborts, and any error rolls back. The destination holds the final table plus an execution history record with row count, duration, and status. The bottom panel compares the two publish paths on a table of 122,590 rows: TRUNCATE plus INSERT blocks readers even with NOLOCK for roughly 15,000 milliseconds, while the sp_rename swap never blocks readers and takes roughly 370 milliseconds.</desc>
+
+  <defs>
+    <marker id="syncjob-arrow" viewBox="0 0 10 10" refX="8.5" refY="5"
+            markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 Z" fill="#3D5A8A"/>
+    </marker>
+    <linearGradient id="syncjob-rule" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#22D3EE"/>
+      <stop offset="0.55" stop-color="#8B5CF6"/>
+      <stop offset="1" stop-color="#0B1220"/>
+    </linearGradient>
+  </defs>
+
+  <!-- contained background: identical in GitHub light and dark themes -->
+  <rect x="0" y="0" width="1200" height="600" rx="20" fill="#0B1220"/>
+  <rect x="0.75" y="0.75" width="1198.5" height="598.5" rx="19.25" fill="none" stroke="#1E2C46" stroke-width="1.5"/>
+
+  <!-- header -->
+  <g font-family="Segoe UI, Roboto, Helvetica Neue, Arial, sans-serif">
+    <text x="44" y="56" font-size="28" font-weight="700" fill="#E9EFFA">PeopleWorks SyncJob</text>
+    <text x="44" y="84" font-size="15" fill="#93A4C0">SQL Server  →  SQL Server   ·   full refresh &amp; incremental   ·   CLI or service</text>
+
+    <rect x="920" y="44" width="140" height="30" rx="15" fill="#10203A" stroke="#2A4368"/>
+    <text x="990" y="64" font-size="13" font-weight="600" fill="#7FC4F5" text-anchor="middle">Windows Service</text>
+
+    <rect x="1072" y="44" width="84" height="30" rx="15" fill="#171436" stroke="#3A2F72"/>
+    <text x="1114" y="64" font-size="13" font-weight="600" fill="#A78BFA" text-anchor="middle">.NET 9</text>
+  </g>
+  <rect x="44" y="104" width="360" height="2" rx="1" fill="url(#syncjob-rule)"/>
+
+  <!-- panels -->
+  <g fill="#121C30" stroke="#22304C" stroke-width="1.25">
+    <rect x="40"  y="128" width="180" height="272" rx="14"/>
+    <rect x="252" y="128" width="212" height="272" rx="14"/>
+    <rect x="496" y="128" width="180" height="272" rx="14"/>
+    <rect x="708" y="128" width="212" height="272" rx="14"/>
+    <rect x="952" y="128" width="208" height="272" rx="14"/>
+  </g>
+
+  <!-- panel titles -->
+  <g font-family="Segoe UI, Roboto, Helvetica Neue, Arial, sans-serif"
+     font-size="12" font-weight="700" letter-spacing="1.6" fill="#8FA3C4" text-anchor="middle">
+    <text x="130"  y="160">SOURCE</text>
+    <text x="358"  y="160">BULK COPY</text>
+    <text x="586"  y="160">STAGE</text>
+    <text x="814"  y="160">GUARD · COMMIT</text>
+    <text x="1056" y="160">DESTINATION</text>
+  </g>
+
+  <!-- flow arrows -->
+  <g stroke="#3D5A8A" stroke-width="2" marker-end="url(#syncjob-arrow)">
+    <line x1="226" y1="264" x2="244" y2="264"/>
+    <line x1="470" y1="264" x2="488" y2="264"/>
+    <line x1="682" y1="264" x2="700" y2="264"/>
+    <line x1="926" y1="264" x2="944" y2="264"/>
+  </g>
+
+  <!-- P1: source database and how it is read -->
+  <g>
+    <ellipse cx="130" cy="226" rx="30" ry="10" fill="#C9403B"/>
+    <rect x="100" y="190" width="60" height="36" fill="#C9403B"/>
+    <path d="M 100 206 A 30 10 0 0 0 160 206" fill="none" stroke="#0B1220" stroke-opacity="0.35" stroke-width="1.5"/>
+    <ellipse cx="130" cy="190" rx="30" ry="10" fill="#EE7A75"/>
+    <text x="130" y="256" font-family="Segoe UI, Roboto, Helvetica Neue, Arial, sans-serif"
+          font-size="13" font-weight="600" fill="#B7C7E0" text-anchor="middle">SQL Server</text>
+
+    <g font-family="Cascadia Mono, SFMono-Regular, Consolas, Liberation Mono, Menlo, monospace"
+       font-size="13" text-anchor="middle">
+      <rect x="58" y="270" width="144" height="32" rx="9" fill="#0F1A2E" stroke="#2A3C5E"/>
+      <text x="130" y="291" fill="#B7C7E0">SELECT …</text>
+
+      <rect x="58" y="308" width="144" height="32" rx="9" fill="#0F1A2E" stroke="#2A3C5E"/>
+      <text x="130" y="329" fill="#B7C7E0">--sp NAME</text>
+
+      <rect x="58" y="346" width="144" height="32" rx="9" fill="#0C2230" stroke="#1C6F84"/>
+      <text x="130" y="367" fill="#67E8F9">RowVer &gt; 0x…</text>
+    </g>
+  </g>
+
+  <!-- P2: streaming the rows -->
+  <g font-family="Cascadia Mono, SFMono-Regular, Consolas, Liberation Mono, Menlo, monospace"
+     font-size="13" text-anchor="middle">
+    <rect x="268" y="176" width="180" height="34" rx="9" fill="#0C2230" stroke="#1C6F84"/>
+    <text x="358" y="198" fill="#67E8F9">SqlBulkCopy</text>
+
+    <rect x="268" y="218" width="180" height="34" rx="9" fill="#0F1A2E" stroke="#2A3C5E"/>
+    <text x="358" y="240" fill="#B7C7E0">BatchSize  10 000</text>
+
+    <rect x="268" y="260" width="180" height="34" rx="9" fill="#0F1A2E" stroke="#2A3C5E"/>
+    <text x="358" y="282" fill="#B7C7E0">MAXDOP  4</text>
+
+    <rect x="268" y="302" width="180" height="34" rx="9" fill="#0F1A2E" stroke="#2A3C5E"/>
+    <text x="358" y="324" fill="#B7C7E0">KeepIdentity</text>
+
+    <rect x="268" y="344" width="180" height="34" rx="9" fill="#2A2109" stroke="#8A6A16"/>
+    <text x="358" y="366" fill="#FCD34D">--dry-run → 0 rows</text>
+  </g>
+
+  <!-- P3: stage table -->
+  <g>
+    <rect x="512" y="176" width="148" height="138" rx="8" fill="#101A2E" stroke="#2A3C5E"/>
+    <path d="M 512 184 a 8 8 0 0 1 8 -8 h 132 a 8 8 0 0 1 8 8 v 18 h -148 Z" fill="#16233C"/>
+    <g stroke="#22304C" stroke-width="1">
+      <line x1="512" y1="202" x2="660" y2="202"/>
+      <line x1="512" y1="230" x2="660" y2="230"/>
+      <line x1="512" y1="258" x2="660" y2="258"/>
+      <line x1="512" y1="286" x2="660" y2="286"/>
+      <line x1="576" y1="176" x2="576" y2="314"/>
+    </g>
+    <g font-family="Cascadia Mono, SFMono-Regular, Consolas, Liberation Mono, Menlo, monospace"
+       text-anchor="middle">
+      <g font-size="11" fill="#8FA3C4">
+        <text x="544" y="194">Id</text>
+        <text x="618" y="194">Amount</text>
+      </g>
+      <g font-size="12.5" fill="#B7C7E0">
+        <text x="544" y="221">1024</text><text x="618" y="221">18.40</text>
+        <text x="544" y="249">1025</text><text x="618" y="249">92.10</text>
+        <text x="544" y="277">1026</text><text x="618" y="277">7.05</text>
+        <text x="544" y="305">1027</text><text x="618" y="305">55.60</text>
+      </g>
+    </g>
+    <rect x="512" y="336" width="148" height="30" rx="15" fill="#0F1A2E" stroke="#2A3C5E"/>
+    <text x="586" y="356" font-family="Cascadia Mono, SFMono-Regular, Consolas, Liberation Mono, Menlo, monospace"
+          font-size="11.5" fill="#93A4C0" text-anchor="middle">dbo.Sales_Stage</text>
+  </g>
+
+  <!-- P4: the threshold guard decides whether the load is published -->
+  <g font-family="Cascadia Mono, SFMono-Regular, Consolas, Liberation Mono, Menlo, monospace">
+    <rect x="724" y="176" width="180" height="34" rx="9" fill="#2A2109" stroke="#8A6A16"/>
+    <text x="814" y="198" font-size="13" fill="#FCD34D" text-anchor="middle">MinRowThreshold</text>
+
+    <rect x="724" y="222" width="180" height="52" rx="10" fill="#0B2119" stroke="#1E6B4C"/>
+    <rect x="724" y="222" width="4"   height="52" rx="2" fill="#34D399"/>
+    <text x="742" y="246" font-size="14" font-weight="700" fill="#34D399">COMMIT</text>
+    <text x="742" y="264" font-size="11.5" fill="#8FA3C4">rows ≥ threshold</text>
+
+    <rect x="724" y="284" width="180" height="52" rx="10" fill="#2A1315" stroke="#8C3134"/>
+    <rect x="724" y="284" width="4"   height="52" rx="2" fill="#F87171"/>
+    <text x="742" y="308" font-size="14" font-weight="700" fill="#F87171">ABORT</text>
+    <text x="742" y="326" font-size="11.5" fill="#8FA3C4">rows &lt; threshold</text>
+
+    <rect x="724" y="348" width="180" height="30" rx="15" fill="#0F1A2E" stroke="#2A3C5E"/>
+    <text x="814" y="368" font-size="12" fill="#93A4C0" text-anchor="middle">ERROR → ROLLBACK</text>
+  </g>
+
+  <!-- P5: published table plus the audit record -->
+  <g>
+    <ellipse cx="1000" cy="228" rx="26" ry="9" fill="#C9403B"/>
+    <rect x="974" y="192" width="52" height="36" fill="#C9403B"/>
+    <path d="M 974 208 A 26 9 0 0 0 1026 208" fill="none" stroke="#0B1220" stroke-opacity="0.35" stroke-width="1.5"/>
+    <ellipse cx="1000" cy="192" rx="26" ry="9" fill="#EE7A75"/>
+    <text x="1038" y="216" font-family="Segoe UI, Roboto, Helvetica Neue, Arial, sans-serif"
+          font-size="15" font-weight="600" fill="#E9EFFA">dbo.Sales</text>
+
+    <rect x="968" y="258" width="176" height="118" rx="10" fill="#0F1A2E" stroke="#2A3C5E"/>
+    <text x="1056" y="280" font-family="Segoe UI, Roboto, Helvetica Neue, Arial, sans-serif"
+          font-size="10.5" font-weight="700" letter-spacing="1.1" fill="#8FA3C4"
+          text-anchor="middle">EXECUTION HISTORY</text>
+    <line x1="968" y1="290" x2="1144" y2="290" stroke="#22304C" stroke-width="1"/>
+    <g font-family="Cascadia Mono, SFMono-Regular, Consolas, Liberation Mono, Menlo, monospace" font-size="12.5">
+      <g fill="#8FA3C4">
+        <text x="986" y="312">rows</text>
+        <text x="986" y="335">swap</text>
+        <text x="986" y="358">status</text>
+      </g>
+      <g fill="#B7C7E0" text-anchor="end">
+        <text x="1126" y="312">5 435</text>
+        <text x="1126" y="335">370 ms</text>
+        <text x="1126" y="358" fill="#34D399">OK</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- publish rule: how the new rows replace the old ones -->
+  <rect x="40" y="428" width="1120" height="136" rx="14" fill="#101A2E" stroke="#22304C" stroke-width="1.25"/>
+
+  <g font-family="Cascadia Mono, SFMono-Regular, Consolas, Liberation Mono, Menlo, monospace"
+     font-size="12" fill="#8FA3C4" text-anchor="middle">
+    <text x="230"  y="464">PUBLISH PATH</text>
+    <text x="600"  y="464">READERS DURING LOAD</text>
+    <text x="1018" y="464">122 590 ROWS</text>
+  </g>
+  <line x1="72" y1="474" x2="1128" y2="474" stroke="#22304C" stroke-width="1"/>
+
+  <g font-family="Cascadia Mono, SFMono-Regular, Consolas, Liberation Mono, Menlo, monospace" text-anchor="middle">
+    <rect x="72" y="480" width="1056" height="34" rx="8" fill="#0D1729"/>
+    <rect x="72" y="480" width="4" height="34" rx="2" fill="#F87171"/>
+    <g font-size="15" fill="#B7C7E0">
+      <text x="230" y="503">TRUNCATE + INSERT</text>
+      <text x="600" y="503" fill="#8FA3C4">blocked, even with NOLOCK</text>
+    </g>
+    <rect x="908" y="486" width="220" height="22" rx="11" fill="#2A1315" stroke="#8C3134"/>
+    <text x="1018" y="502" font-size="12" font-weight="700" fill="#FCA5A5">≈ 15 000 ms</text>
+
+    <rect x="72" y="520" width="1056" height="34" rx="8" fill="#131F36"/>
+    <rect x="72" y="520" width="4" height="34" rx="2" fill="#34D399"/>
+    <g font-size="15" fill="#B7C7E0">
+      <text x="230" y="543" fill="#67E8F9">sp_rename swap</text>
+      <text x="600" y="543" fill="#8FA3C4">never blocked</text>
+    </g>
+    <rect x="908" y="526" width="220" height="22" rx="11" fill="#0B2119" stroke="#1E6B4C"/>
+    <text x="1018" y="542" font-size="12" font-weight="700" fill="#6EE7B7">≈ 370 ms</text>
+  </g>
+</svg>

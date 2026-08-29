@@ -195,3 +195,23 @@ jobs:
 
       - name: --all walks every section
         run: dotnet bin/Release/net9.0/SyncJob.dll run -c ci.json --all
+
+  docs:
+    name: pocket guide assets
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # GitHub Pages sirve docs/ como raiz del sitio, asi que la pagina no puede
+      # apuntar a ../assets/hero.svg: lleva su propia copia del diagrama. Si las
+      # dos copias se separan, el README y la guia muestran cosas distintas y
+      # nadie se entera hasta que alguien las compara a ojo.
+      - name: docs/hero.svg matches assets/hero.svg
+        run: |
+          if ! cmp -s assets/hero.svg docs/hero.svg; then
+            echo "::error::docs/hero.svg drifted from assets/hero.svg. Fix it with: cp assets/hero.svg docs/hero.svg"
+            diff -u assets/hero.svg docs/hero.svg || true
+            exit 1
+          fi
+          echo "docs/hero.svg is in sync."

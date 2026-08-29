@@ -1,0 +1,918 @@
+<!doctype html>
+<html lang="es" data-lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SyncJob Pocket Guide</title>
+<meta name="description" content="Command pocket guide for PeopleWorks SyncJob — move SQL Server data between databases with a staged, guarded commit. Full refresh or incremental, CLI or Windows Service.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%230B1220'/><g fill='none' stroke='%2322D3EE' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'><path d='M7 12h14M17 8l4 4-4 4'/></g><g fill='none' stroke='%2367E8F9' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'><path d='M25 21H11M15 17l-4 4 4 4'/></g></svg>">
+<style>
+:root{
+  --bg:#0B1220; --panel:#121C30; --panel2:#101A2E; --raise:#16233C;
+  --line:#22304C; --line2:#2A3C5E;
+  --tx:#E9EFFA; --mu:#93A4C0; --mu2:#8FA3C4;
+  --cy:#22D3EE; --cy2:#67E8F9; --am:#FBBF24; --am2:#FCD34D;
+  --gr:#34D399; --rd:#F87171; --pu:#A78BFA; --bl:#7FC4F5;
+  --mono:"Cascadia Mono",ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",Menlo,monospace;
+  --sans:"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  --wrap:1120px;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth;scroll-padding-top:132px}
+body{margin:0;background:var(--bg);color:var(--tx);font:16px/1.6 var(--sans);-webkit-font-smoothing:antialiased}
+[data-lang="es"] .en{display:none}
+[data-lang="en"] .es{display:none}
+a{color:var(--cy2);text-decoration:none}
+a:hover{text-decoration:underline}
+code{font-family:var(--mono)}
+.wrap{max-width:var(--wrap);margin:0 auto;padding:0 20px}
+
+/* ---------- header ---------- */
+header{position:sticky;top:0;z-index:50;background:rgba(11,18,32,.92);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.bar{display:flex;align-items:center;gap:16px;padding:14px 0;flex-wrap:wrap}
+.brand{display:flex;align-items:baseline;gap:10px;margin-right:auto;min-width:0}
+.brand b{font-size:19px;letter-spacing:-.2px}
+.brand span{font-family:var(--mono);font-size:12px;color:var(--cy2);border:1px solid #1C6F84;background:#0C2230;padding:3px 9px;border-radius:20px;white-space:nowrap}
+.tools{display:flex;align-items:center;gap:8px}
+.seg{display:flex;border:1px solid var(--line2);border-radius:20px;overflow:hidden;background:var(--panel2)}
+.seg button{font:600 12px/1 var(--sans);letter-spacing:.6px;color:var(--mu);background:none;border:0;padding:8px 13px;cursor:pointer}
+.seg button[aria-pressed="true"]{background:var(--cy);color:#04212A}
+.ghost{display:inline-flex;align-items:center;gap:7px;font:600 12.5px/1 var(--sans);color:var(--mu);border:1px solid var(--line2);background:var(--panel2);padding:8px 13px;border-radius:20px}
+.ghost:hover{color:var(--tx);border-color:#3D5A8A;text-decoration:none}
+.ghost svg{width:15px;height:15px;fill:currentColor}
+nav.jump{border-top:1px solid var(--line);overflow-x:auto;scrollbar-width:thin}
+nav.jump ul{display:flex;gap:4px;list-style:none;margin:0;padding:9px 0;white-space:nowrap}
+nav.jump a{font-family:var(--mono);font-size:12.5px;color:var(--mu);padding:6px 11px;border-radius:7px;display:block}
+nav.jump a:hover{background:var(--raise);color:var(--tx);text-decoration:none}
+
+/* ---------- hero band ---------- */
+.hero{border-bottom:1px solid var(--line);background:
+   radial-gradient(900px 220px at 12% -40%,rgba(34,211,238,.13),transparent 70%),
+   radial-gradient(700px 200px at 78% -50%,rgba(139,92,246,.12),transparent 70%)}
+.hero .wrap{padding-top:44px;padding-bottom:40px}
+.hero h1{font-size:clamp(28px,4.4vw,42px);line-height:1.12;margin:0 0 12px;letter-spacing:-.7px}
+.hero h1 em{font-style:normal;color:var(--cy2)}
+.hero p.lead{color:var(--mu);max-width:64ch;margin:0 0 22px;font-size:17px}
+.rail{display:flex;align-items:center;gap:9px;flex-wrap:wrap;font-family:var(--mono);font-size:12.5px}
+.rail i{font-style:normal;border:1px solid var(--line2);background:var(--panel);padding:6px 11px;border-radius:8px;color:var(--mu2)}
+.rail i.on{border-color:#1C6F84;background:#0C2230;color:var(--cy2)}
+.rail i.hot{border-color:#8A6A16;background:#2A2109;color:var(--am2)}
+.rail s{color:#3D5A8A;text-decoration:none}
+.note{margin-top:22px;display:flex;gap:11px;align-items:flex-start;border:1px solid #2A4368;background:#10203A;border-radius:11px;padding:12px 15px;font-size:14px;color:var(--bl);max-width:70ch}
+.note svg{width:17px;height:17px;fill:currentColor;flex:none;margin-top:2px}
+
+/* ---------- sections ---------- */
+main{padding:8px 0 20px}
+section{margin:44px 0 0}
+.head{display:flex;align-items:center;gap:12px;margin:0 0 6px}
+.head .n{font-family:var(--mono);font-size:12px;color:#3D5A8A;border:1px solid var(--line);border-radius:7px;padding:4px 8px;flex:none}
+h2{font-size:23px;margin:0;letter-spacing:-.3px}
+.sub{color:var(--mu);margin:0 0 20px 46px;font-size:15px;max-width:72ch}
+@media(max-width:640px){.sub{margin-left:0}}
+
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px;margin-bottom:14px}
+.card>h3{margin:0 0 4px;font-size:15px;letter-spacing:.2px}
+.card>h3 code{font-size:14.5px;color:var(--cy2)}
+.card>p{margin:0 0 14px;color:var(--mu);font-size:14.5px}
+.card>p:last-child{margin-bottom:0}
+.grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(330px,1fr))}
+
+/* ---------- command block ---------- */
+.cmd{position:relative;background:var(--panel2);border:1px solid var(--line2);border-radius:10px;margin:0 0 12px}
+.cmd:last-child{margin-bottom:0}
+.cmd pre{margin:0;padding:14px 46px 14px 15px;overflow-x:auto;font-family:var(--mono);font-size:13.5px;line-height:1.75;color:#CFE0F5}
+.cmd .k{color:var(--cy2)}
+.cmd .o{color:var(--am2)}
+.cmd .v{color:var(--gr)}
+.cmd .c{color:#5C7196}
+.cmd button{position:absolute;top:8px;right:8px;width:30px;height:30px;display:grid;place-items:center;background:var(--raise);border:1px solid var(--line2);border-radius:7px;color:var(--mu);cursor:pointer;opacity:0;transition:opacity .14s}
+.cmd:hover button,.cmd button:focus-visible{opacity:1}
+.cmd button:hover{color:var(--cy2);border-color:#1C6F84}
+.cmd button svg{width:14px;height:14px;fill:currentColor}
+.cmd button.done{color:var(--gr);border-color:#1E6B4C;opacity:1}
+
+/* ---------- tables ---------- */
+.tbl{overflow-x:auto;border:1px solid var(--line);border-radius:11px;background:var(--panel2)}
+table{border-collapse:collapse;width:100%;font-size:14px;min-width:520px}
+th,td{text-align:left;padding:10px 14px;border-bottom:1px solid var(--line)}
+th{background:var(--raise);color:var(--mu2);font:700 11.5px/1.4 var(--sans);letter-spacing:1.1px;text-transform:uppercase;white-space:nowrap}
+tr:last-child td{border-bottom:0}
+td code{font-size:13px;color:var(--cy2);white-space:nowrap}
+td:first-child{white-space:nowrap}
+.eng{font-family:var(--mono);font-size:11.5px;color:var(--mu)}
+
+/* ---------- callouts ---------- */
+.warn{display:flex;gap:11px;align-items:flex-start;border-radius:11px;padding:12px 15px;font-size:14px;margin:0 0 14px;border:1px solid}
+.warn:last-child{margin-bottom:0}
+.warn svg{width:17px;height:17px;fill:currentColor;flex:none;margin-top:2px}
+.warn.d{border-color:#8C3134;background:#2A1315;color:#FCA5A5}
+.warn.a{border-color:#8A6A16;background:#241C08;color:var(--am2)}
+.warn.g{border-color:#1E6B4C;background:#0B2119;color:#6EE7B7}
+
+/* ---------- misc ---------- */
+.kv{display:grid;grid-template-columns:auto 1fr;gap:8px 16px;font-size:14px;margin:0}
+.kv dt{font-family:var(--mono);font-size:13px;color:var(--am2)}
+.kv dd{margin:0;color:var(--mu)}
+.figure{margin:0 0 14px;border:1px solid var(--line);border-radius:14px;background:var(--panel2);padding:10px}
+.figure img{display:block;width:100%;height:auto;border-radius:8px}
+.figure figcaption{color:var(--mu);font-size:13px;padding:10px 8px 4px;text-align:center}
+footer{border-top:1px solid var(--line);margin-top:56px;padding:32px 0 46px;color:var(--mu);font-size:14px}
+footer .fl{display:flex;gap:20px;flex-wrap:wrap;align-items:center;justify-content:space-between}
+footer b{color:var(--tx)}
+.up{position:fixed;right:20px;bottom:20px;width:40px;height:40px;display:grid;place-items:center;background:var(--panel);border:1px solid var(--line2);border-radius:11px;color:var(--mu);opacity:0;pointer-events:none;transition:opacity .2s}
+.up.show{opacity:1;pointer-events:auto}
+.up:hover{color:var(--cy2);border-color:#1C6F84;text-decoration:none}
+.up svg{width:16px;height:16px;fill:currentColor}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap bar">
+    <div class="brand">
+      <b>SyncJob</b>
+      <span class="es">Guía de bolsillo</span><span class="en">Pocket Guide</span>
+    </div>
+    <div class="tools">
+      <div class="seg" role="group" aria-label="Language">
+        <button type="button" data-set="es" aria-pressed="true">ES</button>
+        <button type="button" data-set="en" aria-pressed="false">EN</button>
+      </div>
+      <a class="ghost" href="https://github.com/peopleworks/syncjob">
+        <svg viewBox="0 0 16 16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+        <span>GitHub</span>
+      </a>
+    </div>
+  </div>
+  <nav class="jump"><div class="wrap"><ul>
+    <li><a href="#install"><span class="es">Instalación</span><span class="en">Install</span></a></li>
+    <li><a href="#start"><span class="es">Inicio rápido</span><span class="en">Quick start</span></a></li>
+    <li><a href="#run"><code>run</code></a></li>
+    <li><a href="#swap"><span class="es">Stage → Final</span><span class="en">Stage → Final</span></a></li>
+    <li><a href="#safety"><span class="es">Red de seguridad</span><span class="en">Safety net</span></a></li>
+    <li><a href="#incremental">Incremental</a></li>
+    <li><a href="#secrets"><span class="es">Secretos</span><span class="en">Secrets</span></a></li>
+    <li><a href="#sqlite"><span class="es">Flujo SQLite</span><span class="en">SQLite workflow</span></a></li>
+    <li><a href="#auto"><span class="es">Automatización</span><span class="en">Automation</span></a></li>
+    <li><a href="#cheat"><span class="es">Chuleta</span><span class="en">Cheat sheet</span></a></li>
+  </ul></div></nav>
+</header>
+
+<div class="hero"><div class="wrap">
+  <h1>
+    <span class="es">Mueve las filas <em>sin arruinar el destino</em></span>
+    <span class="en">Move the rows <em>without wrecking the destination</em></span>
+  </h1>
+  <p class="lead es">Todos los comandos de <code>SyncJob.exe</code> en una página. Las filas aterrizan
+    primero en una tabla de staging y solo se publican cuando el conteo pasa el umbral.</p>
+  <p class="lead en">Every <code>SyncJob.exe</code> command on one page. Rows land in a stage table
+    first and are published only when the row count clears the threshold.</p>
+
+  <div class="rail">
+    <i>SELECT</i><s>→</s><i class="on">SqlBulkCopy</i><s>→</s><i>STAGE</i>
+    <s>→</s><i class="hot">MinRowThreshold</i><s>→</s><i class="on">sp_rename</i><s>→</s><i>FINAL</i>
+  </div>
+
+  <div class="note">
+    <svg viewBox="0 0 16 16"><path d="M8 1.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13ZM0 8a8 8 0 1 1 16 0A8 8 0 0 1 0 8Zm9 3a1 1 0 1 1-2 0 1 1 0 0 1 2 0ZM8 4a.75.75 0 0 1 .75.75v3.5a.75.75 0 0 1-1.5 0v-3.5A.75.75 0 0 1 8 4Z"/></svg>
+    <div>
+      <span class="es"><b>Windows · .NET 9 · SQL Server 2016+.</b> El modo servicio y el cifrado DPAPI
+        de contraseñas requieren Windows.</span>
+      <span class="en"><b>Windows · .NET 9 · SQL Server 2016+.</b> Service mode and DPAPI password
+        encryption require Windows.</span>
+    </div>
+  </div>
+</div></div>
+
+<main class="wrap">
+
+<!-- 1 INSTALL -->
+<section id="install">
+  <div class="head"><span class="n">01</span><h2><span class="es">Instalación</span><span class="en">Install</span></h2></div>
+  <p class="sub es">Tres caminos: binario autocontenido, herramienta de .NET, o compilar desde el código.</p>
+  <p class="sub en">Three ways in: a self-contained binary, a .NET tool, or a build from source.</p>
+
+  <div class="grid">
+    <div class="card">
+      <h3><span class="es">Binario o herramienta .NET</span><span class="en">Binary or .NET tool</span></h3>
+      <p class="es">El release trae <code>syncjob-win-x64.zip</code>: un solo ejecutable, sin runtime que instalar.</p>
+      <p class="en">The release ships <code>syncjob-win-x64.zip</code>: a single executable, no runtime to install.</p>
+      <div class="cmd"><pre><code><span class="c"># <span class="es">binario del release</span><span class="en">release binary</span></span>
+<span class="k">.\SyncJob.exe</span> <span class="o">--version</span>
+
+<span class="c"># <span class="es">o como herramienta global</span><span class="en">or as a global tool</span></span>
+<span class="k">dotnet</span> tool install <span class="o">-g</span> <span class="v">PeopleWorks.SyncJob</span>
+<span class="k">syncjob</span> <span class="o">--version</span></code></pre></div>
+      <p class="es"><a href="https://github.com/peopleworks/syncjob/releases/latest">Último release ↗</a> ·
+        <a href="https://www.nuget.org/packages/PeopleWorks.SyncJob">NuGet ↗</a></p>
+      <p class="en"><a href="https://github.com/peopleworks/syncjob/releases/latest">Latest release ↗</a> ·
+        <a href="https://www.nuget.org/packages/PeopleWorks.SyncJob">NuGet ↗</a></p>
+    </div>
+
+    <div class="card">
+      <h3><span class="es">Compilar desde el código</span><span class="en">Build from source</span></h3>
+      <div class="cmd"><pre><code><span class="k">git</span> clone https://github.com/peopleworks/syncjob.git
+<span class="k">cd</span> syncjob
+<span class="k">dotnet</span> publish SyncJob.csproj <span class="o">`</span>
+  <span class="o">-c</span> <span class="v">Release</span> <span class="o">-r</span> <span class="v">win-x64</span> <span class="o">`</span>
+  <span class="o">--self-contained</span> <span class="v">true</span> <span class="o">`</span>
+  <span class="o">-p:PublishSingleFile=</span><span class="v">true</span> <span class="o">`</span>
+  <span class="o">-p:IncludeNativeLibrariesForSelfExtract=</span><span class="v">true</span> <span class="o">`</span>
+  <span class="o">-o</span> <span class="v">./publish</span></code></pre></div>
+      <div class="warn d">
+        <svg viewBox="0 0 16 16"><path d="M6.46 1.14a1.75 1.75 0 0 1 3.08 0l5.25 9.44A1.75 1.75 0 0 1 13.25 13.2H2.75a1.75 1.75 0 0 1-1.54-2.62ZM8 5a.75.75 0 0 0-.75.75v2.5a.75.75 0 0 0 1.5 0v-2.5A.75.75 0 0 0 8 5Zm0 6a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z"/></svg>
+        <div>
+          <span class="es"><code>IncludeNativeLibrariesForSelfExtract</code> no es opcional. Sin él,
+            el archivo único deja fuera <code>Microsoft.Data.SqlClient.SNI.dll</code> y
+            <code>e_sqlite3.dll</code>, y el ejecutable lanza <code>DllNotFoundException</code> al
+            abrir la primera conexión.</span>
+          <span class="en"><code>IncludeNativeLibrariesForSelfExtract</code> is not optional. Without it
+            the single file leaves out <code>Microsoft.Data.SqlClient.SNI.dll</code> and
+            <code>e_sqlite3.dll</code>, and the executable throws <code>DllNotFoundException</code>
+            the moment it opens a connection.</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 2 QUICK START -->
+<section id="start">
+  <div class="head"><span class="n">02</span><h2><span class="es">Inicio rápido</span><span class="en">Quick start</span></h2></div>
+  <p class="sub es">Un archivo JSON describe el origen, el destino y las opciones. Se valida antes de escribir nada.</p>
+  <p class="sub en">One JSON file describes source, destination and options. Validate it before writing a row.</p>
+
+  <div class="grid">
+    <div class="card">
+      <h3><code>appsettings.json</code></h3>
+      <div class="cmd"><pre><code>{
+  <span class="k">"SalesSync"</span>: {
+    <span class="k">"Source"</span>: {
+      <span class="o">"ConnectionString"</span>: <span class="v">"Server=SRC;Database=App;…"</span>,
+      <span class="o">"Query"</span>: <span class="v">"SELECT Id, Name, Amount FROM dbo.Sales"</span>
+    },
+    <span class="k">"Destination"</span>: {
+      <span class="o">"ConnectionString"</span>: <span class="v">"Server=DW;Database=Rpt;…"</span>,
+      <span class="o">"StageTable"</span>: <span class="v">"dbo.Sales_Stage"</span>,
+      <span class="o">"FinalTable"</span>: <span class="v">"dbo.Sales"</span>
+    },
+    <span class="k">"Options"</span>: {
+      <span class="o">"BatchSize"</span>: <span class="v">10000</span>,
+      <span class="o">"MaxDegreeOfParallelism"</span>: <span class="v">4</span>,
+      <span class="o">"KeepIdentity"</span>: <span class="v">true</span>,
+      <span class="o">"MinRowThresholdToCommit"</span>: <span class="v">1000</span>
+    }
+  }
+}</code></pre></div>
+      <p class="es">Varias secciones en un mismo archivo son normales: <code>-s</code> elige cuál correr.</p>
+      <p class="en">Several sections in one file is the normal case: <code>-s</code> picks which one runs.</p>
+    </div>
+
+    <div class="card">
+      <h3><span class="es">Validar, ensayar, ejecutar</span><span class="en">Validate, rehearse, run</span></h3>
+      <div class="cmd"><pre><code><span class="c"># <span class="es">1 · conexiones, esquema y mapeos</span><span class="en">1 · connections, schema and mappings</span></span>
+<span class="k">SyncJob.exe</span> <span class="k">validate</span> <span class="o">-c</span> <span class="v">appsettings.json</span> <span class="o">-s</span> <span class="v">SalesSync</span>
+
+<span class="c"># <span class="es">2 · ensayo: no escribe una sola fila</span><span class="en">2 · rehearsal: not one row is written</span></span>
+<span class="k">SyncJob.exe</span> <span class="k">run</span> <span class="o">-c</span> <span class="v">appsettings.json</span> <span class="o">-s</span> <span class="v">SalesSync</span> <span class="o">--dry-run</span>
+
+<span class="c"># <span class="es">3 · prueba con pocas filas</span><span class="en">3 · try it with a few rows</span></span>
+<span class="k">SyncJob.exe</span> <span class="k">run</span> <span class="o">-c</span> <span class="v">appsettings.json</span> <span class="o">-s</span> <span class="v">SalesSync</span> <span class="o">--top</span> <span class="v">100</span>
+
+<span class="c"># <span class="es">4 · en serio</span><span class="en">4 · for real</span></span>
+<span class="k">SyncJob.exe</span> <span class="k">run</span> <span class="o">-c</span> <span class="v">appsettings.json</span> <span class="o">-s</span> <span class="v">SalesSync</span></code></pre></div>
+      <p class="es">¿Treinta columnas a mano? <code>config-init</code> genera la sección desde una lista de campos.</p>
+      <p class="en">Thirty columns by hand? <code>config-init</code> writes the section from a list of field names.</p>
+      <div class="cmd"><pre><code><span class="k">SyncJob.exe</span> <span class="k">config-init</span> <span class="o">-f</span> <span class="v">fields.txt</span> <span class="o">-o</span> <span class="v">appsettings.json</span> <span class="o">`</span>
+  <span class="o">-s</span> <span class="v">SalesSync</span> <span class="o">--stage</span> <span class="v">dbo.Sales_Stage</span> <span class="o">--final</span> <span class="v">dbo.Sales</span> <span class="o">`</span>
+  <span class="o">--batch-size</span> <span class="v">10000</span> <span class="o">--maxdop</span> <span class="v">4</span> <span class="o">--min-commit</span> <span class="v">1000</span></code></pre></div>
+    </div>
+  </div>
+</section>
+
+<!-- 3 RUN -->
+<section id="run">
+  <div class="head"><span class="n">03</span><h2><code>run</code> — <span class="es">opciones</span><span class="en">options</span></h2></div>
+  <p class="sub es">Todo lo que está en <code>Options</code> se puede sobrescribir en la línea de comandos para una sola corrida, sin tocar el archivo.</p>
+  <p class="sub en">Anything under <code>Options</code> can be overridden on the command line for a single run, without touching the file.</p>
+
+  <div class="tbl"><table>
+    <thead><tr>
+      <th><span class="es">Opción</span><span class="en">Option</span></th>
+      <th><span class="es">Qué hace</span><span class="en">What it does</span></th>
+    </tr></thead>
+    <tbody>
+      <tr><td><code>-c, --config &lt;PATH&gt;</code></td><td><span class="es">Archivo JSON. Default <code>appsettings.json</code></span><span class="en">JSON file. Defaults to <code>appsettings.json</code></span></td></tr>
+      <tr><td><code>-s, --section &lt;NAME&gt;</code></td><td><span class="es">Sección dentro del JSON. Default <code>SyncJob</code></span><span class="en">Section inside the JSON. Defaults to <code>SyncJob</code></span></td></tr>
+      <tr><td><code>--all</code></td><td><span class="es">Ejecuta todas las secciones, en orden de archivo</span><span class="en">Runs every section, in file order</span></td></tr>
+      <tr><td><code>--continue-on-error</code></td><td><span class="es">Con <code>--all</code>: sigue aunque una sección falle</span><span class="en">With <code>--all</code>: keep going when a section fails</span></td></tr>
+      <tr><td><code>--dry-run</code></td><td><span class="es">Valida sin escribir ninguna fila</span><span class="en">Validates without writing a single row</span></td></tr>
+      <tr><td><code>--direct</code></td><td><span class="es">Escribe directo en Final, sin Stage</span><span class="en">Writes straight to Final, skipping Stage</span></td></tr>
+      <tr><td><code>--append</code></td><td><span class="es">No trunca Final antes de cargar</span><span class="en">Does not truncate Final before loading</span></td></tr>
+      <tr><td><code>--full-refresh</code></td><td><span class="es">Ignora el tracking incremental y sincroniza todo</span><span class="en">Ignores incremental tracking and syncs everything</span></td></tr>
+      <tr><td><code>--init-tracking</code></td><td><span class="es">Crea e inicializa la tabla de tracking</span><span class="en">Creates and initializes the tracking table</span></td></tr>
+      <tr><td><code>--top &lt;N&gt;</code></td><td><span class="es">Lee solo N filas del origen (pruebas)</span><span class="en">Reads only N rows from the source (testing)</span></td></tr>
+      <tr><td><code>--min-commit &lt;N&gt;</code></td><td><span class="es">Sobrescribe <code>MinRowThresholdToCommit</code></span><span class="en">Overrides <code>MinRowThresholdToCommit</code></span></td></tr>
+      <tr><td><code>--force-commit</code></td><td><span class="es">Comitea aunque las filas no lleguen al umbral</span><span class="en">Commits even when rows fall below the threshold</span></td></tr>
+      <tr><td><code>--skip-commit</code></td><td><span class="es">Carga Stage y no publica en Final</span><span class="en">Loads Stage and does not publish to Final</span></td></tr>
+      <tr><td><code>--batch-size &lt;N&gt;</code></td><td><span class="es">Sobrescribe <code>BatchSize</code></span><span class="en">Overrides <code>BatchSize</code></span></td></tr>
+      <tr><td><code>--maxdop &lt;N&gt;</code></td><td><span class="es">Sobrescribe <code>MaxDegreeOfParallelism</code></span><span class="en">Overrides <code>MaxDegreeOfParallelism</code></span></td></tr>
+      <tr><td><code>--sp &lt;NAME&gt;</code></td><td><span class="es">Usa un stored procedure como origen</span><span class="en">Uses a stored procedure as the source</span></td></tr>
+      <tr><td><code>--sp-param &lt;N=V&gt;</code></td><td><span class="es">Parámetro del stored procedure (repetible)</span><span class="en">Stored procedure parameter (repeatable)</span></td></tr>
+      <tr><td><code>--log-level &lt;L&gt;</code></td><td>Trace · Debug · Info · Warn · Error · Fatal</td></tr>
+      <tr><td><code>--log-file &lt;PATH&gt;</code></td><td><span class="es">Archivo de log de esta corrida</span><span class="en">Log file for this run</span></td></tr>
+      <tr><td><code>--log-dir &lt;PATH&gt;</code></td><td><span class="es">Directorio de logs, con archivo diario automático</span><span class="en">Log directory, auto-named daily file</span></td></tr>
+      <tr><td><code>--json-log</code></td><td><span class="es">Logs en JSONL, para agregadores</span><span class="en">JSONL logs, for aggregators</span></td></tr>
+      <tr><td><code>--quiet</code></td><td><span class="es">Sin salida en consola, solo archivo</span><span class="en">No console output, file only</span></td></tr>
+      <tr><td><code>--trust-server-cert</code></td><td><span class="es">No valida la CA del servidor SQL (temporal / dev)</span><span class="en">Skips SQL Server CA validation (temporary / dev)</span></td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="card" style="margin-top:14px">
+    <h3><span class="es">Correr todo el archivo de una vez</span><span class="en">Running the whole file at once</span></h3>
+    <p class="es">Un archivo suele tener varias sincronizaciones. Encadenarlas a mano en un script es
+      exactamente donde una se olvida y nadie se entera.</p>
+    <p class="en">A config file usually holds several syncs. Chaining them by hand in a script is exactly
+      where one gets forgotten and nobody notices.</p>
+    <div class="cmd"><pre><code><span class="c"># <span class="es">todas las secciones, parando en el primer fallo</span><span class="en">every section, stopping at the first failure</span></span>
+<span class="k">SyncJob.exe</span> <span class="k">run</span> <span class="o">-c</span> <span class="v">appsettings.json</span> <span class="o">--all</span>
+
+<span class="c"># <span class="es">terminar y reportar al final cuáles fallaron</span><span class="en">finish, then report which ones failed</span></span>
+<span class="k">SyncJob.exe</span> <span class="k">run</span> <span class="o">-c</span> <span class="v">appsettings.json</span> <span class="o">--all</span> <span class="o">--continue-on-error</span></code></pre></div>
+    <p class="es">Una sección cuenta como sincronizable cuando tiene <code>Source</code> y
+      <code>Destination</code>, así que bloques como <code>ConnectionStrings</code> o
+      <code>Logging</code> se saltan solos.</p>
+    <p class="en">A section counts as syncable when it has both <code>Source</code> and
+      <code>Destination</code>, so unrelated blocks like <code>ConnectionStrings</code> or
+      <code>Logging</code> are skipped automatically.</p>
+    <div class="warn a">
+      <svg viewBox="0 0 16 16"><path d="M6.46 1.14a1.75 1.75 0 0 1 3.08 0l5.25 9.44A1.75 1.75 0 0 1 13.25 13.2H2.75a1.75 1.75 0 0 1-1.54-2.62ZM8 5a.75.75 0 0 0-.75.75v2.5a.75.75 0 0 0 1.5 0v-2.5A.75.75 0 0 0 8 5Zm0 6a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z"/></svg>
+      <div>
+        <span class="es">Parar en el primer fallo es el default a propósito: si la tabla de hechos no
+          cargó, seguir cargando sus dimensiones deja el warehouse <b>internamente inconsistente</b>,
+          que es más difícil de detectar que una parada limpia.</span>
+        <span class="en">Stopping at the first failure is the default on purpose: if the fact table did
+          not load, continuing to load its dimensions leaves the warehouse <b>internally
+          inconsistent</b>, which is harder to detect than a clean stop.</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 4 STAGE / FINAL -->
+<section id="swap">
+  <div class="head"><span class="n">04</span><h2>Stage → Final</h2></div>
+  <p class="sub es">Las filas se escriben en una tabla de staging antes de que exista una transacción. Publicar es solo renombrar.</p>
+  <p class="sub en">Rows are written to a stage table before any transaction opens. Publishing is just a rename.</p>
+
+  <figure class="figure">
+    <img src="hero.svg" alt="Diagrama del flujo de SyncJob: el origen SQL Server se lee con un SELECT, un stored procedure o un filtro incremental; las filas viajan por SqlBulkCopy hasta una tabla de staging; MinRowThresholdToCommit decide entre COMMIT y ABORT antes de publicar; el destino queda con la tabla final y un registro de auditoría. Abajo, la comparación entre TRUNCATE + INSERT, que bloquea lectores unos 15 000 ms, y el swap con sp_rename, que no bloquea y toma unos 370 ms.">
+    <figcaption class="es">Las filas ya están escritas cuando abre la transacción, así que el intercambio es una operación de metadatos.</figcaption>
+    <figcaption class="en">The rows are already written when the transaction opens, so the swap is a metadata operation.</figcaption>
+  </figure>
+
+  <div class="grid">
+    <div class="card">
+      <h3><span class="es">Cómo funciona el intercambio</span><span class="en">How the swap works</span></h3>
+      <p class="es">En un full refresh, SyncJob <b>no</b> trunca la tabla final para copiar filas dentro.
+        Intercambia las dos tablas <b>por nombre</b>:</p>
+      <p class="en">For a full refresh, SyncJob does <b>not</b> truncate the final table and copy rows into
+        it. It swaps the two tables <b>by name</b>:</p>
+      <div class="cmd"><pre><code>Final    <span class="k">→</span>  Final_swap_a1b2c3d4
+Stage    <span class="k">→</span>  Final        <span class="c"><span class="es">← ya cargada, ahora publicada</span><span class="en">← already loaded, now published</span></span>
+temporal <span class="k">→</span>  Stage        <span class="c"><span class="es">← datos viejos, se descartan</span><span class="en">← old data, discarded</span></span></code></pre></div>
+      <p class="es"><code>TRUNCATE</code> toma un lock de modificación de esquema que se mantiene hasta
+        el commit, y <b>todo lector se bloquea contra él, incluso con <code>NOLOCK</code></b>. En una
+        tabla de 122 590 filas eso midió <b>~15 s de dashboards congelados</b>. El swap midió <b>~370 ms</b>.</p>
+      <p class="en"><code>TRUNCATE</code> takes a schema-modification lock held until commit, and
+        <b>every reader blocks against it — even one using <code>NOLOCK</code></b>. On a 122,590-row
+        table that measured <b>~15 seconds of blocked dashboards</b>. The rename swap measured
+        <b>~370 ms</b>.</p>
+    </div>
+
+    <div class="card">
+      <h3><span class="es">Cuándo cae al camino lento</span><span class="en">When it falls back</span></h3>
+      <p class="es">SyncJob vuelve a <code>TRUNCATE</code> + <code>INSERT</code> — mismo resultado, solo
+        más lento — cuando el swap no aplica:</p>
+      <p class="en">SyncJob falls back to <code>TRUNCATE</code> + <code>INSERT</code> — identical results,
+        just slower — when the swap does not apply:</p>
+      <dl class="kv">
+        <dt>view</dt><dd><span class="es"><code>Final</code> es una vista, no una tabla</span><span class="en"><code>Final</code> is a view, not a table</span></dd>
+        <dt>schema</dt><dd><span class="es"><code>Final</code> y <code>Stage</code> viven en esquemas distintos</span><span class="en"><code>Final</code> and <code>Stage</code> live in different schemas</span></dd>
+        <dt>--append</dt><dd><span class="es">hay que conservar las filas existentes</span><span class="en">existing rows must be preserved</span></dd>
+      </dl>
+      <p class="es" style="margin-top:14px">El log deja constancia de cuál camino corrió:
+        <code>dest.swap.rename</code> o <code>dest.swap.truncate</code>.</p>
+      <p class="en" style="margin-top:14px">The log records which path ran:
+        <code>dest.swap.rename</code> or <code>dest.swap.truncate</code>.</p>
+      <div class="warn d">
+        <svg viewBox="0 0 16 16"><path d="M6.46 1.14a1.75 1.75 0 0 1 3.08 0l5.25 9.44A1.75 1.75 0 0 1 13.25 13.2H2.75a1.75 1.75 0 0 1-1.54-2.62ZM8 5a.75.75 0 0 0-.75.75v2.5a.75.75 0 0 0 1.5 0v-2.5A.75.75 0 0 0 8 5Zm0 6a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z"/></svg>
+        <div>
+          <span class="es"><b>Los índices viajan con la tabla física, no con el nombre.</b>
+            <code>sp_rename</code> cambia qué tabla responde a qué nombre; índices, constraints y
+            permisos siguen a la tabla física. Si agrega un índice solo a <code>Final</code>, tras el
+            próximo swap ese índice vive en <code>Stage</code>. <b>Cree los índices en ambas.</b></span>
+          <span class="en"><b>Indexes travel with the physical table, not the name.</b>
+            <code>sp_rename</code> changes which table answers to which name; indexes, constraints and
+            permissions follow the physical table. Add an index to <code>Final</code> only, and after
+            the next swap it lives on <code>Stage</code>. <b>Create indexes on both.</b></span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 5 SAFETY -->
+<section id="safety">
+  <div class="head"><span class="n">05</span><h2><span class="es">Red de seguridad</span><span class="en">Safety net</span></h2></div>
+  <p class="sub es">Copiar una tabla es fácil. Copiarla cada noche, sin nadie mirando, sin dejar nunca el destino peor que antes, no lo es.</p>
+  <p class="sub en">Copying a table is easy. Copying it every night, unattended, without ever leaving the destination in a worse state than before, is not.</p>
+
+  <div class="grid">
+    <div class="card">
+      <h3><code>MinRowThresholdToCommit</code></h3>
+      <p class="es">El guardia. Si el origen devuelve menos filas de las esperadas, no se publica nada.</p>
+      <p class="en">The guard. If the source returns fewer rows than expected, nothing is published.</p>
+      <div class="cmd"><pre><code><span class="c"># <span class="es">umbral en la corrida, sin tocar el archivo</span><span class="en">threshold for this run only</span></span>
+<span class="k">SyncJob.exe</span> <span class="k">run</span> <span class="o">-c</span> <span class="v">appsettings.json</span> <span class="o">-s</span> <span class="v">SalesSync</span> <span class="o">--min-commit</span> <span class="v">1000</span>
+
+<span class="c"># <span class="es">sé lo que hago: publica igual</span><span class="en">I know what I am doing: publish anyway</span></span>
+<span class="k">SyncJob.exe</span> <span class="k">run</span> <span class="o">-c</span> <span class="v">appsettings.json</span> <span class="o">-s</span> <span class="v">SalesSync</span> <span class="o">--force-commit</span></code></pre></div>
+      <div class="warn a">
+        <svg viewBox="0 0 16 16"><path d="M6.46 1.14a1.75 1.75 0 0 1 3.08 0l5.25 9.44A1.75 1.75 0 0 1 13.25 13.2H2.75a1.75 1.75 0 0 1-1.54-2.62ZM8 5a.75.75 0 0 0-.75.75v2.5a.75.75 0 0 0 1.5 0v-2.5A.75.75 0 0 0 8 5Zm0 6a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z"/></svg>
+        <div>
+          <span class="es">Un umbral de <code>0</code> no protege de nada. Póngalo en un número que
+            signifique algo: es lo que impide que un origen roto vacíe el destino.</span>
+          <span class="en">A threshold of <code>0</code> protects nothing. Set it to a number that means
+            something: it is the guard that stops a broken source from wiping the destination.</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3><span class="es">Ensayar antes de estrenar</span><span class="en">Rehearse before opening night</span></h3>
+      <div class="cmd"><pre><code><span class="c"># <span class="es">conexiones, esquema y mapeos; nada se escribe</span><span class="en">connections, schema and mappings; nothing is written</span></span>
+<span class="k">SyncJob.exe</span> <span class="k">validate</span> <span class="o">-c</span> <span class="v">appsettings.json</span> <span class="o">-s</span> <span class="v">SalesSync</span>
+
+<span class="c"># <span class="es">valida contra la tabla Final (modo directo)</span><span class="en">validate against the Final table (direct mode)</span></span>
+<span class="k">SyncJob.exe</span> <span class="k">validate</span> <span class="o">-c</span> <span class="v">appsettings.json</span> <span class="o">-s</span> <span class="v">SalesSync</span> <span class="o">--direct</span>
+
+<span class="c"># <span class="es">carga Stage y se detiene antes de publicar</span><span class="en">load Stage and stop before publishing</span></span>
+<span class="k">SyncJob.exe</span> <span class="k">run</span> <span class="o">-c</span> <span class="v">appsettings.json</span> <span class="o">-s</span> <span class="v">SalesSync</span> <span class="o">--skip-commit</span>
+
+<span class="c"># <span class="es">100 filas para ver la forma de los datos</span><span class="en">100 rows to see the shape of the data</span></span>
+<span class="k">SyncJob.exe</span> <span class="k">run</span> <span class="o">-c</span> <span class="v">appsettings.json</span> <span class="o">-s</span> <span class="v">SalesSync</span> <span class="o">--top</span> <span class="v">100</span></code></pre></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3><span class="es">Mapeos de columnas</span><span class="en">Column mappings</span></h3>
+    <p class="es">Son obligatorios cuando los nombres difieren o cuando quiere mover un subconjunto.
+      Cuando coinciden uno a uno, <b>deje la lista vacía y SyncJob la deriva del origen</b> leyendo la
+      metadata con <code>CommandBehavior.SchemaOnly</code>: SQL Server devuelve las columnas
+      <b>sin ejecutar la consulta</b>.</p>
+    <p class="en">Required when source and destination names differ, or when you want a subset of the
+      columns. When the names match one to one, <b>leave the list out and SyncJob derives it from the
+      source</b>, reading the metadata with <code>CommandBehavior.SchemaOnly</code>: SQL Server returns
+      the column list <b>without executing the query</b>.</p>
+    <div class="cmd"><pre><code><span class="k">"ColumnMappings"</span>: [
+  { <span class="o">"Source"</span>: <span class="v">"Id"</span>,       <span class="o">"Dest"</span>: <span class="v">"CustomerId"</span> },
+  { <span class="o">"Source"</span>: <span class="v">"FullName"</span>, <span class="o">"Dest"</span>: <span class="v">"Name"</span>       }
+]
+
+<span class="k">"ColumnMappings"</span>: []   <span class="c"># <span class="es">o quitar la propiedad: se deriva sola</span><span class="en">or omit it entirely: derived automatically</span></span></code></pre></div>
+    <p class="es">Escribir treinta nombres a mano es exactamente donde se esconde el error tipográfico
+      que aparece cuando los datos salen corridos una columna.</p>
+    <p class="en">Hand-writing thirty column names is exactly where a typo hides until the data comes
+      out shifted by one.</p>
+  </div>
+</section>
+
+<!-- 6 INCREMENTAL -->
+<section id="incremental">
+  <div class="head"><span class="n">06</span><h2><span class="es">Sincronización incremental</span><span class="en">Incremental sync</span></h2></div>
+  <p class="sub es">Solo las filas que cambiaron desde la última corrida. SyncJob crea y mantiene <code>dbo.SyncJobTracking</code> en el destino.</p>
+  <p class="sub en">Only the rows that changed since the last run. SyncJob creates and maintains <code>dbo.SyncJobTracking</code> in the destination.</p>
+
+  <div class="grid">
+    <div class="card">
+      <h3><span class="es">Configuración</span><span class="en">Configuration</span></h3>
+      <div class="cmd"><pre><code><span class="k">"Incremental"</span>: {
+  <span class="o">"Enabled"</span>: <span class="v">true</span>,
+  <span class="o">"Mode"</span>: <span class="v">"RowVersion"</span>,
+  <span class="o">"TrackingColumn"</span>: <span class="v">"RowVer"</span>,
+  <span class="o">"MergeStrategy"</span>: <span class="v">"Upsert"</span>,
+  <span class="o">"PrimaryKeyColumns"</span>: [<span class="v">"Id"</span>],
+  <span class="o">"DeleteDetection"</span>: <span class="v">"SoftDelete"</span>,
+  <span class="o">"SoftDeleteColumn"</span>: <span class="v">"IsDeleted"</span>,
+  <span class="o">"SoftDeleteValue"</span>: <span class="v">"1"</span>
+}</code></pre></div>
+      <div class="cmd"><pre><code><span class="c"># <span class="es">primera vez: crear la tabla de tracking</span><span class="en">first time: create the tracking table</span></span>
+<span class="k">SyncJob.exe</span> <span class="k">run</span> <span class="o">-c</span> <span class="v">appsettings.json</span> <span class="o">-s</span> <span class="v">SalesSync</span> <span class="o">--init-tracking</span>
+
+<span class="c"># <span class="es">volver a traer todo, ignorando el watermark</span><span class="en">pull everything again, ignoring the watermark</span></span>
+<span class="k">SyncJob.exe</span> <span class="k">run</span> <span class="o">-c</span> <span class="v">appsettings.json</span> <span class="o">-s</span> <span class="v">SalesSync</span> <span class="o">--full-refresh</span></code></pre></div>
+    </div>
+
+    <div class="card">
+      <h3><span class="es">Modos de tracking</span><span class="en">Tracking modes</span></h3>
+      <div class="tbl"><table style="min-width:0">
+        <thead><tr>
+          <th><span class="es">Modo</span><span class="en">Mode</span></th>
+          <th><span class="es">Cómo filtra</span><span class="en">How it filters</span></th>
+        </tr></thead>
+        <tbody>
+          <tr><td><code>Timestamp</code></td><td class="eng">WHERE UpdatedAt &gt; @LastSync</td></tr>
+          <tr><td><code>RowVersion</code></td><td class="eng">WHERE RowVer &gt; 0x{last}</td></tr>
+          <tr><td><code>ChangeTracking</code></td><td><span class="es">Change Tracking nativo</span><span class="en">Native Change Tracking</span></td></tr>
+          <tr><td><code>ChangeDataCapture</code></td><td><span class="es">CDC, con valores anteriores</span><span class="en">CDC, including old values</span></td></tr>
+        </tbody>
+      </table></div>
+      <div class="warn g" style="margin-top:14px">
+        <svg viewBox="0 0 16 16"><path d="M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.75.75 0 0 1 1.06-1.06L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0Z"/></svg>
+        <div>
+          <span class="es"><code>RowVersion</code> es el modo de producción: es monótono y no sufre
+            desfases de reloj entre servidores.</span>
+          <span class="en"><code>RowVersion</code> is the production mode: it is monotonic and immune to
+            clock skew between servers.</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <h3><span class="es">Estrategia de merge</span><span class="en">Merge strategy</span></h3>
+      <div class="tbl"><table style="min-width:0"><tbody>
+        <tr><td><code>Insert</code></td><td><span class="es">Solo filas nuevas</span><span class="en">New rows only</span></td></tr>
+        <tr><td><code>Upsert</code></td><td><span class="es">Inserta nuevas + actualiza existentes por PK</span><span class="en">Insert new + update existing, by primary key</span></td></tr>
+        <tr><td><code>Full</code></td><td><span class="es">Inserta + actualiza + elimina</span><span class="en">Insert + update + delete</span></td></tr>
+      </tbody></table></div>
+    </div>
+    <div class="card">
+      <h3><span class="es">Detección de bajas</span><span class="en">Delete detection</span></h3>
+      <div class="tbl"><table style="min-width:0"><tbody>
+        <tr><td><code>SoftDelete</code></td><td><span class="es">Columna bandera igual a un valor</span><span class="en">Flag column equals a value</span></td></tr>
+        <tr><td><code>AutoDetect</code></td><td><span class="es">Eventos de Change Tracking / CDC</span><span class="en">Change Tracking / CDC events</span></td></tr>
+        <tr><td><code>Comparison</code></td><td><span class="es">Comparación de PK entre origen y destino</span><span class="en">PK comparison between source and destination</span></td></tr>
+      </tbody></table></div>
+    </div>
+  </div>
+</section>
+
+<!-- 7 SECRETS -->
+<section id="secrets">
+  <div class="head"><span class="n">07</span><h2><span class="es">Secretos</span><span class="en">Secrets</span></h2></div>
+  <p class="sub es">Las cadenas de conexión viven en un archivo, en un servidor. <code>secrets</code> cifra las contraseñas con Windows DPAPI: la llave la gestiona el sistema operativo y nunca está en el archivo ni en el binario.</p>
+  <p class="sub en">Connection strings live in a file on a server. <code>secrets</code> encrypts the passwords with Windows DPAPI: the key is managed by the operating system and never lives in the file or the binary.</p>
+
+  <div class="grid">
+    <div class="card">
+      <h3><span class="es">Ver y cifrar</span><span class="en">Inspect and encrypt</span></h3>
+      <div class="cmd"><pre><code><span class="c"># <span class="es">qué está expuesto</span><span class="en">what is exposed</span></span>
+<span class="k">SyncJob.exe</span> <span class="k">secrets</span> <span class="k">status</span> <span class="o">-c</span> <span class="v">appsettings.json</span>
+
+<span class="c"># <span class="es">cifrar cada contraseña del archivo</span><span class="en">encrypt every password in the file</span></span>
+<span class="k">SyncJob.exe</span> <span class="k">secrets</span> <span class="k">protect</span> <span class="o">-c</span> <span class="v">appsettings.json</span>
+
+<span class="c"># <span class="es">para un servicio: alcance de máquina</span><span class="en">for a service: machine scope</span></span>
+<span class="k">SyncJob.exe</span> <span class="k">secrets</span> <span class="k">protect</span> <span class="o">-c</span> <span class="v">appsettings.json</span> <span class="o">--scope</span> <span class="v">machine</span></code></pre></div>
+      <p class="es">Solo se cifra la contraseña. Servidor, base y usuario quedan legibles: durante un
+        incidente hay que poder ver a dónde apunta un job sin descifrar nada, y un diff del archivo
+        tiene que seguir sirviendo.</p>
+      <p class="en">Only the password is encrypted. Server, database and user stay readable, because during
+        an incident you need to see where a job points without decrypting anything — and a diff of the
+        file has to stay useful.</p>
+    </div>
+
+    <div class="card">
+      <h3><span class="es">Marcadores de alcance</span><span class="en">Scope markers</span></h3>
+      <p class="es">El valor cifrado lleva su propio alcance, así que descifrar nunca tiene que adivinar.</p>
+      <p class="en">Each encrypted value carries its own scope, so decryption never has to guess.</p>
+      <div class="tbl"><table style="min-width:0">
+        <thead><tr>
+          <th><span class="es">Marca</span><span class="en">Marker</span></th>
+          <th><span class="es">Quién puede descifrar</span><span class="en">Who can decrypt</span></th>
+        </tr></thead>
+        <tbody>
+          <tr><td><code>enc:u:</code></td><td><span class="es">Solo la cuenta que cifró, en esa máquina</span><span class="en">Only the account that encrypted it, on that machine</span></td></tr>
+          <tr><td><code>enc:m:</code></td><td><span class="es">Cualquier cuenta de esa máquina</span><span class="en">Any account on that machine</span></td></tr>
+          <tr><td><span class="eng">(none)</span></td><td><span class="es">Texto plano — cualquiera</span><span class="en">Plain text — anyone</span></td></tr>
+        </tbody>
+      </table></div>
+      <div class="warn d" style="margin-top:14px">
+        <svg viewBox="0 0 16 16"><path d="M6.46 1.14a1.75 1.75 0 0 1 3.08 0l5.25 9.44A1.75 1.75 0 0 1 13.25 13.2H2.75a1.75 1.75 0 0 1-1.54-2.62ZM8 5a.75.75 0 0 0-.75.75v2.5a.75.75 0 0 0 1.5 0v-2.5A.75.75 0 0 0 8 5Zm0 6a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z"/></svg>
+        <div>
+          <span class="es"><b>Elegir el alcance no es cosmético.</b> Si cifra desde una sesión interactiva
+            con el alcance <code>user</code> por defecto y el servicio de Windows corre bajo otra cuenta,
+            <b>el servicio no puede leer el archivo</b>. Use <code>--scope machine</code> o cifre estando
+            logueado como la cuenta del servicio.</span>
+          <span class="en"><b>Choosing a scope is not cosmetic.</b> If you encrypt from an interactive
+            session with the default <code>user</code> scope and the Windows Service runs under a
+            different account, <b>the service cannot read the file</b>. Use <code>--scope machine</code>,
+            or encrypt while signed in as the service account.</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3><code>.plain.bak</code></h3>
+    <p class="es"><code>protect</code> escribe una copia <code>.plain.bak</code> la primera vez que corre.
+      <b>Ese respaldo tiene las contraseñas en claro: muévalo a un lugar seguro y bórrelo del servidor.</b>
+      Volver a correr <code>protect</code> nunca lo sobrescribe, así que el original no se pierde.</p>
+    <p class="en"><code>protect</code> writes a <code>.plain.bak</code> copy the first time it runs.
+      <b>That backup holds the passwords in clear text — move it somewhere safe and delete it from the
+      server.</b> Re-running <code>protect</code> never overwrites that backup, so the original is not lost.</p>
+    <div class="cmd"><pre><code><span class="k">SyncJob.exe</span> <span class="k">secrets</span> <span class="k">protect</span> <span class="o">-c</span> <span class="v">appsettings.json</span> <span class="o">--no-backup</span>   <span class="c"># <span class="es">sin copia en claro</span><span class="en">no clear-text copy</span></span></code></pre></div>
+    <p class="es"><b>Qué protege DPAPI:</b> copiar el archivo a otra máquina es inútil, la llave no viaja
+      con él. <b>Qué no protege:</b> quien ya ejecuta código como el mismo usuario, en la misma máquina,
+      puede leer el secreto. Ese es el límite del mecanismo, y conviene saberlo en vez de suponerlo.</p>
+    <p class="en"><b>What DPAPI protects:</b> copying the file to another machine is useless — the key does
+      not travel with it. <b>What it does not protect:</b> anyone already executing code as the same user,
+      on the same machine, can read the secret. That is the boundary of the mechanism, and it is worth
+      knowing rather than assuming.</p>
+  </div>
+</section>
+
+<!-- 8 SQLITE -->
+<section id="sqlite">
+  <div class="head"><span class="n">08</span><h2><span class="es">Flujo SQLite</span><span class="en">SQLite workflow</span></h2></div>
+  <p class="sub es">La alternativa al JSON: conexiones, configuraciones y mapeos guardados en una base SQLite local, con las contraseñas cifradas con DPAPI.</p>
+  <p class="sub en">The alternative to JSON: connections, configs and mappings stored in a local SQLite database, with passwords encrypted using DPAPI.</p>
+
+  <div class="grid">
+    <div class="card">
+      <h3><span class="es">Montar una sincronización</span><span class="en">Set up a sync</span></h3>
+      <div class="cmd"><pre><code><span class="c"># <span class="es">1 · conexiones</span><span class="en">1 · connections</span></span>
+<span class="k">SyncJob.exe</span> <span class="k">connection</span> <span class="k">add</span> <span class="v">source</span> <span class="o">`</span>
+  <span class="o">--server</span> <span class="v">SQL01</span> <span class="o">--database</span> <span class="v">SourceDB</span> <span class="o">`</span>
+  <span class="o">--username</span> <span class="v">etl</span> <span class="o">--password</span> <span class="v">"secret"</span>
+
+<span class="k">SyncJob.exe</span> <span class="k">connection</span> <span class="k">add</span> <span class="v">dest</span> <span class="o">`</span>
+  <span class="o">--server</span> <span class="v">SQL02</span> <span class="o">--database</span> <span class="v">DestDB</span> <span class="o">`</span>
+  <span class="o">--username</span> <span class="v">etl</span> <span class="o">--password</span> <span class="v">"secret"</span>
+
+<span class="k">SyncJob.exe</span> <span class="k">connection</span> <span class="k">test</span> <span class="v">source</span>
+
+<span class="c"># <span class="es">2 · configuración</span><span class="en">2 · config</span></span>
+<span class="k">SyncJob.exe</span> <span class="k">config</span> <span class="k">create</span> <span class="v">sales</span> <span class="o">`</span>
+  <span class="o">--display-name</span> <span class="v">"Sales Sync"</span> <span class="o">`</span>
+  <span class="o">--source-conn</span> <span class="v">source</span> <span class="o">--dest-conn</span> <span class="v">dest</span> <span class="o">`</span>
+  <span class="o">--source-query</span> <span class="v">"SELECT Id, Name, Amount FROM dbo.Sales"</span> <span class="o">`</span>
+  <span class="o">--dest-stage</span> <span class="v">dbo.Sales_Stage</span> <span class="o">--dest-final</span> <span class="v">dbo.Sales</span>
+
+<span class="c"># <span class="es">3 · mapeos</span><span class="en">3 · mappings</span></span>
+<span class="k">SyncJob.exe</span> <span class="k">mapping</span> <span class="k">add</span> <span class="v">sales</span> <span class="o">`</span>
+  <span class="o">--source</span> <span class="v">Id</span> <span class="o">--dest</span> <span class="v">Id</span> <span class="o">--primary-key</span>
+<span class="k">SyncJob.exe</span> <span class="k">mapping</span> <span class="k">add</span> <span class="v">sales</span> <span class="o">`</span>
+  <span class="o">--source</span> <span class="v">Name</span> <span class="o">--dest</span> <span class="v">Name</span>
+
+<span class="c"># <span class="es">4 · ejecutar</span><span class="en">4 · run it</span></span>
+<span class="k">SyncJob.exe</span> <span class="k">run-db</span> <span class="v">sales</span> <span class="o">--dry-run</span>
+<span class="k">SyncJob.exe</span> <span class="k">run-db</span> <span class="v">sales</span></code></pre></div>
+      <p class="es">Todos los subcomandos aceptan <code>--interactive</code> para pedir los valores paso a paso.</p>
+      <p class="en">Every subcommand accepts <code>--interactive</code> to be walked through the values.</p>
+    </div>
+
+    <div class="card">
+      <h3><span class="es">Historial de ejecuciones</span><span class="en">Execution history</span></h3>
+      <p class="es">Cada corrida se guarda sola: inicio y fin, duración, filas leídas, insertadas,
+        actualizadas, eliminadas y fallidas, detalle del error, máquina y ruta del log.</p>
+      <p class="en">Every run is stored automatically: start and end time, duration, rows read, inserted,
+        updated, deleted and failed, error detail, host machine and log path.</p>
+      <div class="cmd"><pre><code><span class="k">SyncJob.exe</span> <span class="k">history</span> <span class="k">list</span>
+<span class="k">SyncJob.exe</span> <span class="k">history</span> <span class="k">list</span> <span class="v">sales</span> <span class="o">--status</span> <span class="v">Failed</span> <span class="o">--limit</span> <span class="v">20</span>
+<span class="k">SyncJob.exe</span> <span class="k">history</span> <span class="k">show</span> <span class="v">&lt;execution-id&gt;</span>
+<span class="k">SyncJob.exe</span> <span class="k">history</span> <span class="k">stats</span> <span class="o">--days</span> <span class="v">30</span>
+<span class="k">SyncJob.exe</span> <span class="k">history</span> <span class="k">clear</span> <span class="o">--older-than</span> <span class="v">90</span></code></pre></div>
+
+      <h3 style="margin-top:18px"><span class="es">La base local</span><span class="en">The local database</span></h3>
+      <div class="cmd"><pre><code><span class="k">SyncJob.exe</span> <span class="k">db</span> <span class="k">info</span>
+<span class="k">SyncJob.exe</span> <span class="k">db</span> <span class="k">backup</span> <span class="o">--output</span> <span class="v">C:\Backup\syncjob.db</span>
+<span class="k">SyncJob.exe</span> <span class="k">db</span> <span class="k">restore</span> <span class="o">--file</span> <span class="v">C:\Backup\syncjob.db</span>
+<span class="k">SyncJob.exe</span> <span class="k">db</span> <span class="k">cleanup</span> <span class="o">--older-than</span> <span class="v">90</span>
+<span class="k">SyncJob.exe</span> <span class="k">db</span> <span class="k">vacuum</span></code></pre></div>
+    </div>
+  </div>
+</section>
+
+<!-- 9 AUTOMATION -->
+<section id="auto">
+  <div class="head"><span class="n">09</span><h2><span class="es">Automatización</span><span class="en">Automation</span></h2></div>
+  <p class="sub es">El mismo binario corre como tarea programada, como servicio de Windows, o reportando a un hub central.</p>
+  <p class="sub en">The same binary runs as a scheduled task, as a Windows Service, or reporting into a central hub.</p>
+
+  <div class="grid">
+    <div class="card">
+      <h3>Task Scheduler</h3>
+      <div class="cmd"><pre><code><span class="k">SyncJob.exe</span> <span class="k">run</span> <span class="o">`</span>
+  <span class="o">-c</span> <span class="v">C:\SyncJob\appsettings.json</span> <span class="o">-s</span> <span class="v">SalesSync</span> <span class="o">`</span>
+  <span class="o">--min-commit</span> <span class="v">1000</span> <span class="o">`</span>
+  <span class="o">--log-file</span> <span class="v">C:\Logs\sync.sales.log</span> <span class="o">`</span>
+  <span class="o">--log-level</span> <span class="v">Info</span> <span class="o">--json-log</span> <span class="o">--quiet</span></code></pre></div>
+      <p class="es">JSONL es compatible con Loki, Splunk y Azure Monitor. Los logs registran progreso,
+        conteos y errores, nunca contraseñas.</p>
+      <p class="en">JSONL is compatible with Loki, Splunk and Azure Monitor. Logs record progress, counts
+        and errors, never passwords.</p>
+      <div class="cmd"><pre><code><span class="c"># <span class="es">archivo diario automático en un directorio</span><span class="en">auto-dated daily file in a directory</span></span>
+<span class="k">SyncJob.exe</span> <span class="k">run</span> <span class="o">-c</span> <span class="v">config.json</span> <span class="o">-s</span> <span class="v">SalesSync</span> <span class="o">`</span>
+  <span class="o">--log-level</span> <span class="v">Debug</span> <span class="o">--log-dir</span> <span class="v">C:\Logs</span></code></pre></div>
+    </div>
+
+    <div class="card">
+      <h3><span class="es">Servicio de Windows</span><span class="en">Windows Service</span></h3>
+      <p class="es">Sin argumentos, el binario arranca en modo agente. Con <code>run</code> o
+        <code>run-db</code>, en modo CLI.</p>
+      <p class="en">With no arguments the binary starts in agent mode. With <code>run</code> or
+        <code>run-db</code>, in CLI mode.</p>
+      <div class="cmd"><pre><code><span class="k">New-Service</span> <span class="o">-Name</span> <span class="v">"PeopleWorks SyncJob"</span> <span class="o">`</span>
+  <span class="o">-BinaryPathName</span> <span class="v">"C:\SyncJob\SyncJob.exe"</span> <span class="o">`</span>
+  <span class="o">-StartupType</span> <span class="v">Automatic</span> <span class="o">`</span>
+  <span class="o">-DisplayName</span> <span class="v">"PeopleWorks SyncJob Service"</span>
+
+<span class="k">Start-Service</span> <span class="v">"PeopleWorks SyncJob"</span></code></pre></div>
+      <p class="es">El servicio se registra en el Visor de eventos con el origen
+        <code>"PeopleWorks SyncJob"</code> y consulta tareas cada 30 segundos.</p>
+      <p class="en">The service registers in the Windows Event Log under source name
+        <code>"PeopleWorks SyncJob"</code> and polls for tasks every 30 seconds.</p>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3><span class="es">Hub central</span><span class="en">Central hub</span></h3>
+    <p class="es">Agrega el historial de varias máquinas en una sola base SQL Server. Tras
+      <code>central enable</code>, cada <code>run-db</code> exitoso empuja su registro a
+      <code>ExecutionHistory_Central</code>. Si el envío falla, la sincronización igual tuvo éxito:
+      el push es fire-and-forget.</p>
+    <p class="en">Aggregates execution history from several machines into one SQL Server database. After
+      <code>central enable</code>, every successful <code>run-db</code> pushes its record to
+      <code>ExecutionHistory_Central</code>. If the push fails the sync still succeeded — central sync is
+      fire-and-forget.</p>
+    <div class="cmd"><pre><code><span class="k">SyncJob.exe</span> <span class="k">central</span> <span class="k">setup</span>     <span class="c"># <span class="es">asistente interactivo</span><span class="en">interactive wizard</span></span>
+<span class="k">SyncJob.exe</span> <span class="k">central</span> <span class="k">test</span>      <span class="c"># <span class="es">verificar la conexión</span><span class="en">verify the connection</span></span>
+<span class="k">SyncJob.exe</span> <span class="k">central</span> <span class="k">enable</span>    <span class="c"># <span class="es">push automático tras cada corrida</span><span class="en">auto-push after every run</span></span>
+<span class="k">SyncJob.exe</span> <span class="k">central</span> <span class="k">status</span>    <span class="c"># <span class="es">configuración actual</span><span class="en">current configuration</span></span>
+<span class="k">SyncJob.exe</span> <span class="k">central</span> <span class="k">sync</span>      <span class="c"># <span class="es">empujar el historial pendiente</span><span class="en">push pending history</span></span>
+<span class="k">SyncJob.exe</span> <span class="k">central</span> <span class="k">disable</span></code></pre></div>
+    <p class="es">En modo servicio, el servidor central además puede despachar tareas a los agentes
+      conectados a través de la tabla <code>SyncTasks</code>.</p>
+    <p class="en">In service mode the central server can also dispatch sync tasks to connected agents
+      through the <code>SyncTasks</code> table.</p>
+  </div>
+
+  <div class="card">
+    <h3><span class="es">Antes de la primera corrida en producción</span><span class="en">Before the first production run</span></h3>
+    <div class="tbl"><table style="min-width:0"><tbody>
+      <tr><td><code>validate</code></td><td><span class="es">Correrlo en toda configuración nueva</span><span class="en">Run it on every new config</span></td></tr>
+      <tr><td><code>--min-commit</code></td><td><span class="es">Un valor con sentido, <b>nunca 0</b></span><span class="en">A meaningful value, <b>never 0</b></span></td></tr>
+      <tr><td><code>secrets protect</code></td><td><span class="es">Ninguna contraseña en claro en el servidor</span><span class="en">No password sitting in clear text on the server</span></td></tr>
+      <tr><td><code>.plain.bak</code></td><td><span class="es">Sacarlo del servidor tras cifrar</span><span class="en">Move it off the server after encrypting</span></td></tr>
+      <tr><td><code>--scope machine</code></td><td><span class="es">Si un servicio va a leer el archivo</span><span class="en">If a Windows Service will read the file</span></td></tr>
+      <tr><td><code>--top 100</code></td><td><span class="es">Probar tablas grandes antes de la carga completa</span><span class="en">Test large tables before the first full load</span></td></tr>
+      <tr><td><code>--init-tracking</code></td><td><span class="es">Inicializar el tracking antes del incremental</span><span class="en">Initialize tracking before the first incremental run</span></td></tr>
+      <tr><td><span class="eng">indexes</span></td><td><span class="es">Crear en Stage los índices que tenga Final</span><span class="en">Create every Final index on Stage as well</span></td></tr>
+      <tr><td><span class="eng">grants</span></td><td><span class="es">Permisos de escritura y bulk insert en el destino</span><span class="en">Bulk insert and write permissions on the destination</span></td></tr>
+    </tbody></table></div>
+  </div>
+</section>
+
+<!-- 10 CHEAT SHEET -->
+<section id="cheat">
+  <div class="head"><span class="n">10</span><h2><span class="es">Chuleta</span><span class="en">Cheat sheet</span></h2></div>
+  <p class="sub es">Todos los comandos. Los de la ruta JSON no necesitan base de datos; los de la ruta SQLite guardan el estado en <code>syncjob.db</code>.</p>
+  <p class="sub en">Every command. The JSON path needs no database; the SQLite path keeps its state in <code>syncjob.db</code>.</p>
+
+  <div class="tbl"><table>
+    <thead><tr>
+      <th><span class="es">Comando</span><span class="en">Command</span></th>
+      <th><span class="es">Ruta</span><span class="en">Path</span></th>
+      <th><span class="es">Qué hace</span><span class="en">What it does</span></th>
+    </tr></thead>
+    <tbody>
+      <tr><td><code>SyncJob.exe --version</code></td><td class="eng">—</td><td><span class="es">Versión</span><span class="en">Version</span></td></tr>
+      <tr><td><code>SyncJob.exe --help</code></td><td class="eng">—</td><td><span class="es">Ayuda</span><span class="en">Help</span></td></tr>
+      <tr><td><code>examples</code></td><td class="eng">—</td><td><span class="es">Ejemplos de uso</span><span class="en">Usage examples</span></td></tr>
+      <tr><td><code>run -c … -s …</code></td><td class="eng">JSON</td><td><span class="es">Ejecuta una sincronización</span><span class="en">Executes a sync</span></td></tr>
+      <tr><td><code>run -c … --all</code></td><td class="eng">JSON</td><td><span class="es">Ejecuta todas las secciones del archivo</span><span class="en">Executes every section in the file</span></td></tr>
+      <tr><td><code>validate -c … -s …</code></td><td class="eng">JSON</td><td><span class="es">Valida conexiones, esquema y mapeos</span><span class="en">Validates connections, schema and mappings</span></td></tr>
+      <tr><td><code>config-init -f … -o …</code></td><td class="eng">JSON</td><td><span class="es">Genera la sección desde una lista de campos</span><span class="en">Writes a section from a list of field names</span></td></tr>
+      <tr><td><code>secrets status -c …</code></td><td class="eng">JSON</td><td><span class="es">Muestra qué contraseñas están expuestas</span><span class="en">Shows which passwords are exposed</span></td></tr>
+      <tr><td><code>secrets protect -c …</code></td><td class="eng">JSON</td><td><span class="es">Cifra las contraseñas con DPAPI</span><span class="en">Encrypts the passwords with DPAPI</span></td></tr>
+      <tr><td><code>connection add|list|test|delete</code></td><td class="eng">SQLite</td><td><span class="es">Conexiones a SQL Server</span><span class="en">SQL Server connections</span></td></tr>
+      <tr><td><code>config create|list|show|delete</code></td><td class="eng">SQLite</td><td><span class="es">Configuraciones de sincronización</span><span class="en">Sync configurations</span></td></tr>
+      <tr><td><code>mapping add|list|remove|clear</code></td><td class="eng">SQLite</td><td><span class="es">Mapeos de columnas por configuración</span><span class="en">Column mappings per config</span></td></tr>
+      <tr><td><code>run-db &lt;CONFIG_ID&gt;</code></td><td class="eng">SQLite</td><td><span class="es">Ejecuta desde la configuración guardada</span><span class="en">Executes from the stored config</span></td></tr>
+      <tr><td><code>history list|show|stats|clear</code></td><td class="eng">SQLite</td><td><span class="es">Historial de ejecuciones</span><span class="en">Execution history</span></td></tr>
+      <tr><td><code>db info|backup|restore|cleanup|vacuum</code></td><td class="eng">SQLite</td><td><span class="es">Administra la base local</span><span class="en">Manages the local database</span></td></tr>
+      <tr><td><code>central setup|test|status|sync</code></td><td class="eng">SQLite</td><td><span class="es">Hub central de sincronización</span><span class="en">Central sync hub</span></td></tr>
+      <tr><td><code>central enable|disable|reset</code></td><td class="eng">SQLite</td><td><span class="es">Activa o reinicia el push automático</span><span class="en">Turns the auto-push on, off, or resets it</span></td></tr>
+      <tr><td><code>SyncJob.exe</code> <span class="eng">(sin argumentos / no args)</span></td><td class="eng">—</td><td><span class="es">Arranca como servicio de Windows</span><span class="en">Starts as a Windows Service</span></td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="card" style="margin-top:14px">
+    <h3><span class="es">Herramienta hermana — SQLDiff</span><span class="en">Companion tool — SQLDiff</span></h3>
+    <p class="es">SyncJob mueve <b>datos</b>. <a href="https://github.com/peopleworks/SqlSchemaDiff">SQLDiff</a>
+      mueve <b>estructura</b>. Y se pasan trabajo: primero la forma, después las filas.</p>
+    <p class="en">SyncJob moves <b>data</b>. <a href="https://github.com/peopleworks/SqlSchemaDiff">SQLDiff</a>
+      moves <b>structure</b>. And they hand work to each other: structure first, then data.</p>
+    <div class="cmd"><pre><code><span class="c"># <span class="es">el drift sale con código 2 cuando las bases divergen</span><span class="en">drift exits with code 2 when the databases diverge</span></span>
+<span class="k">SQLDiff.exe</span> <span class="k">drift</span> <span class="o">--source</span> <span class="v">"…"</span> <span class="o">--target</span> <span class="v">"…"</span> || <span class="k">exit</span> <span class="v">1</span>
+<span class="k">SyncJob.exe</span> <span class="k">run</span> <span class="o">-c</span> <span class="v">appsettings.json</span> <span class="o">--all</span></code></pre></div>
+    <p class="es">Una sincronización hacia un destino cuya forma cambió falla ruidosamente o, peor, tiene
+      éxito hacia las columnas equivocadas. Verificar la forma cuesta segundos.</p>
+    <p class="en">A sync into a destination whose shape has drifted either fails loudly or, worse, succeeds
+      into the wrong columns. Checking the shape costs seconds.</p>
+  </div>
+</section>
+
+</main>
+
+<footer><div class="wrap fl">
+  <div>
+    <div><b>PeopleWorks SyncJob</b> · <span class="es">Licencia</span><span class="en">License</span>
+      <a href="https://github.com/peopleworks/syncjob/blob/main/LICENSE">MIT</a></div>
+    <div style="margin-top:6px">
+      <span class="es">Creado por</span><span class="en">Created by</span>
+      <a href="https://github.com/pedrohernandez-xari">Pedro Hernández</a> —
+      PeopleWorks Services, LLC &amp; Xari Technologies
+    </div>
+  </div>
+  <div style="text-align:right">
+    <div><a href="https://github.com/peopleworks/syncjob">Repo</a> ·
+      <a href="https://github.com/peopleworks/syncjob/blob/main/README.md">README</a> ·
+      <a href="https://github.com/peopleworks/syncjob/issues">Issues</a> ·
+      <a href="https://github.com/peopleworks/SqlSchemaDiff">SQLDiff</a> ·
+      <a href="https://github.com/peopleworks/DBFSync">DBFSync</a></div>
+    <div style="margin-top:6px"><a href="https://dpo.peopleworksservices.com/">DPO — Data Performance Optimizer</a></div>
+  </div>
+</div></footer>
+
+<a href="#" class="up" id="up" aria-label="Top"><svg viewBox="0 0 16 16"><path d="M8 3.5 3 8.5l1.06 1.06L7.25 6.4V13h1.5V6.4l3.19 3.16L13 8.5 8 3.5Z"/></svg></a>
+
+<script>
+(function () {
+  var root = document.documentElement;
+  var btns = document.querySelectorAll('.seg button');
+
+  function apply(lang) {
+    root.setAttribute('data-lang', lang);
+    root.setAttribute('lang', lang);
+    btns.forEach(function (b) {
+      b.setAttribute('aria-pressed', String(b.dataset.set === lang));
+    });
+    try { localStorage.setItem('syncjob-lang', lang); } catch (e) {}
+  }
+
+  var saved = null;
+  try { saved = localStorage.getItem('syncjob-lang'); } catch (e) {}
+  if (saved !== 'es' && saved !== 'en') {
+    saved = (navigator.language || 'es').toLowerCase().indexOf('es') === 0 ? 'es' : 'en';
+  }
+  apply(saved);
+
+  btns.forEach(function (b) {
+    b.addEventListener('click', function () { apply(b.dataset.set); });
+  });
+
+  // copy buttons
+  var ICON_COPY = '<svg viewBox="0 0 16 16"><path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"/><path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"/></svg>';
+  var ICON_OK = '<svg viewBox="0 0 16 16"><path d="M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.75.75 0 0 1 1.06-1.06L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0Z"/></svg>';
+
+  document.querySelectorAll('.cmd').forEach(function (block) {
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.innerHTML = ICON_COPY;
+    btn.setAttribute('aria-label', 'Copy');
+    btn.addEventListener('click', function () {
+      // take only the text visible in the active language
+      var clone = block.querySelector('code').cloneNode(true);
+      var hide = root.getAttribute('data-lang') === 'es' ? '.en' : '.es';
+      clone.querySelectorAll(hide).forEach(function (n) { n.remove(); });
+      var text = clone.textContent.replace(/\u00a0/g, ' ');
+      var done = function () {
+        btn.innerHTML = ICON_OK; btn.classList.add('done');
+        setTimeout(function () { btn.innerHTML = ICON_COPY; btn.classList.remove('done'); }, 1400);
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done, function () {});
+      } else {
+        var ta = document.createElement('textarea');
+        ta.value = text; document.body.appendChild(ta); ta.select();
+        try { document.execCommand('copy'); done(); } catch (e) {}
+        document.body.removeChild(ta);
+      }
+    });
+    block.appendChild(btn);
+  });
+
+  // back to top
+  var up = document.getElementById('up');
+  addEventListener('scroll', function () {
+    up.classList.toggle('show', scrollY > 700);
+  }, { passive: true });
+})();
+</script>
+</body>
+</html>
