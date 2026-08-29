@@ -13,6 +13,14 @@
 [![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
 [![PeopleWorks](https://img.shields.io/badge/by-PeopleWorks-636f61?style=flat-square)](https://mvp.microsoft.com/en-US/mvp/profile/24060a02-dbc6-44ec-bca5-c213ff9835c5)
 
+**[📖 Pocket guide — every command on one page](https://peopleworks.github.io/syncjob/)**
+
+<img src="assets/hero.svg" width="900"
+     alt="Diagram of the SyncJob pipeline: a source SQL Server is read with a SELECT, a stored procedure or an incremental filter; rows stream through SqlBulkCopy into a stage table; MinRowThresholdToCommit decides between COMMIT and ABORT before anything is published; the destination ends up with the final table plus an execution history record. At the bottom, the two publish paths compared on 122,590 rows: TRUNCATE plus INSERT blocks readers for about 15,000 ms, the sp_rename swap never blocks and takes about 370 ms.">
+
+<sub>The rows are already written when the transaction opens, so publishing is a metadata operation —
+and the row count is checked before it happens.</sub>
+
 </div>
 
 ---
@@ -154,6 +162,9 @@ SyncJob.exe run -c appsettings.json -s SalesSync --direct
 SyncJob.exe --version
 SyncJob.exe --help
 ```
+
+> Every command, its flags, and a copy button for each one live in the
+> **[pocket guide](https://peopleworks.github.io/syncjob/)** — one page, ES/EN.
 
 ### Legacy commands (JSON-based)
 
@@ -339,22 +350,23 @@ First run: full refresh and saves state. Subsequent runs: reads last state, buil
 
 ```bash
 # Add connections (passwords encrypted with DPAPI)
-SyncJob.exe connection add --name source --server SQL01 --database SourceDB --user sa --password "secret"
-SyncJob.exe connection add --name dest   --server SQL02 --database DestDB   --user sa --password "secret"
+SyncJob.exe connection add source --server SQL01 --database SourceDB --username etl --password "secret"
+SyncJob.exe connection add dest   --server SQL02 --database DestDB   --username etl --password "secret"
 
 # Create a config
-SyncJob.exe config create --name "Sales Sync" \
+SyncJob.exe config create sales \
+  --display-name "Sales Sync" \
   --source-conn source --dest-conn dest \
   --source-query "SELECT Id, Name, Amount FROM dbo.Sales" \
-  --stage-table dbo.Sales_Stage --final-table dbo.Sales
+  --dest-stage dbo.Sales_Stage --dest-final dbo.Sales
 
 # Add column mappings
-SyncJob.exe mapping add <config-id> --source Id     --dest Id     --primary-key
-SyncJob.exe mapping add <config-id> --source Name   --dest Name
-SyncJob.exe mapping add <config-id> --source Amount --dest Amount
+SyncJob.exe mapping add sales --source Id     --dest Id     --primary-key
+SyncJob.exe mapping add sales --source Name   --dest Name
+SyncJob.exe mapping add sales --source Amount --dest Amount
 
 # Execute
-SyncJob.exe run-db <config-id> --direct
+SyncJob.exe run-db sales --direct
 
 # Review history
 SyncJob.exe history stats
@@ -417,7 +429,7 @@ Every run is stored automatically:
 SyncJob.exe history list                    # Recent executions
 SyncJob.exe history stats                   # Aggregate per config
 SyncJob.exe history show <execution-id>     # Full detail
-SyncJob.exe history clear --days 90         # Remove records older than 90 days
+SyncJob.exe history clear --older-than 90   # Remove records older than 90 days
 ```
 
 Each record: start/end time, duration, rows read/inserted/updated/deleted/failed, error details, host machine, log file path.
@@ -495,9 +507,9 @@ SyncJob.exe config-init \
 
 ```bash
 SyncJob.exe db info              # Path, size, schema version, record counts
-SyncJob.exe db backup            # Timestamped backup copy
-SyncJob.exe db restore <path>    # Restore from backup
-SyncJob.exe db cleanup --days 90 # Remove old history
+SyncJob.exe db backup --output <path>   # Backup copy (timestamped when --output is omitted)
+SyncJob.exe db restore --file <path>    # Restore from backup
+SyncJob.exe db cleanup --older-than 90  # Remove old history
 SyncJob.exe db vacuum            # Compact SQLite file
 ```
 
