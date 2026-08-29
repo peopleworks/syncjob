@@ -601,6 +601,32 @@ Hand-writing thirty column names is exactly where a typo hides until the data co
 
 ---
 
+## The PeopleWorks database tools
+
+SyncJob is one of three .NET CLIs that each solve a different stage of the same
+modernisation. All three are MIT-licensed, and each one ships its whole command surface
+as a single-page guide.
+
+| | [**DBFSync**](https://github.com/peopleworks/DBFSync) | [**SQLDiff**](https://github.com/peopleworks/SqlSchemaDiff) | [**SyncJob**](https://github.com/peopleworks/syncjob) *(this repo)* |
+|---|---|---|---|
+| **Moves** | Legacy data out of DBF files | Structure — DDL | Data — DML |
+| **Source** | Visual FoxPro DBF, via the x86 ODBC driver | SQL Server schema | SQL Server |
+| **Destination** | PostgreSQL, SQL Server or SQLite | A data-preserving `ALTER` script | SQL Server |
+| **Safety model** | One transaction per table, changes detected by SHA-256 | Drops gated, transactional apply, `drift` exits `2` for CI | Stage/final load, row-count threshold, `--dry-run` |
+| **Runs as** | CLI, Windows `win-x86`, .NET 10 | Single-file CLI, .NET 9 | CLI **and** a Windows Service, .NET 9 |
+| **Pocket guide** | [📖 peopleworks.github.io/DBFSync](https://peopleworks.github.io/DBFSync/) | [📖 peopleworks.github.io/SqlSchemaDiff](https://peopleworks.github.io/SqlSchemaDiff/) | [📖 peopleworks.github.io/syncjob](https://peopleworks.github.io/syncjob/) |
+
+They chain, in that order:
+
+1. **SQLDiff** brings the relational schema to the expected shape and catches drift between
+   environments before anything touches the data.
+2. **DBFSync** loads the Visual FoxPro DBFs onto that schema and keeps them in step while
+   the legacy ERP stays in production.
+3. **SyncJob** moves those now-relational rows on to the other SQL Server systems that
+   consume them.
+
+---
+
 ## 🔀 Companion tool — SQLDiff
 
 SyncJob moves **data**. Its sibling, [**SQLDiff**](https://github.com/peopleworks/SqlSchemaDiff), moves **structure**.
@@ -714,7 +740,12 @@ Created by **Pedro Hernández — PeopleWorks**,
 
 Built with [.NET 9](https://dotnet.microsoft.com/) · [Spectre.Console](https://spectreconsole.net/) · [Microsoft.Data.SqlClient](https://github.com/dotnet/SqlClient)
 
-**PeopleWorks SQL tools** — [SQLDiff](https://github.com/peopleworks/SqlSchemaDiff) moves the schema · **SyncJob** moves the data
+**PeopleWorks database tools** — [DBFSync](https://github.com/peopleworks/DBFSync) moves the legacy data ·
+[SQLDiff](https://github.com/peopleworks/SqlSchemaDiff) moves the schema · **SyncJob** moves the data
+
+[📖 DBFSync guide](https://peopleworks.github.io/DBFSync/) ·
+[📖 SQLDiff guide](https://peopleworks.github.io/SqlSchemaDiff/) ·
+[📖 SyncJob guide](https://peopleworks.github.io/syncjob/)
 
 **Every feature in this tool came from running it in production, not from a whiteboard.**
 
