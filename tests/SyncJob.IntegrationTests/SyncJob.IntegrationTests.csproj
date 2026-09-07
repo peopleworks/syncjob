@@ -20,6 +20,9 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\SyncJob.Core\SyncJob.Core.csproj" />
+    <!-- CliLiveTests drives the CLI's own entry point: a test that calls anything
+         else is a test of something else. -->
+    <ProjectReference Include="..\..\src\SyncJob.Cli\SyncJob.Cli.csproj" />
   </ItemGroup>
 
 </Project>
