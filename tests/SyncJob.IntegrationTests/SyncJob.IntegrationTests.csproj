@@ -20,6 +20,10 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\SyncJob.Core\SyncJob.Core.csproj" />
+    <!-- The central command's run path is a surface, not the engine: its job comes out of
+         a SQLite catalog and its credentials out of that catalog's blobs, and neither is
+         reachable from the Core. CentralRunLiveTests drives the command itself. -->
+    <ProjectReference Include="..\..\src\SyncJob.Cli\SyncJob.Cli.csproj" />
   </ItemGroup>
 
 </Project>
