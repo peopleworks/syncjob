@@ -98,10 +98,11 @@ internal static class AppendMergeColumns
 
         foreach(var column in destination)
         {
-            // A computed column has no value of its own to write and a rowversion is
-            // stamped by the server, so naming either one in an INSERT is an error rather
-            // than a preference. Neither is ever offered to the operator to exclude by hand.
-            if(column.IsComputed || column.IsRowVersion)
+            // A computed column has no value of its own to write, a rowversion is
+            // stamped by the server, and a period column of a system-versioned table is
+            // maintained by it, so naming any of them in an INSERT is an error rather
+            // than a preference. None is ever offered to the operator to exclude by hand.
+            if(column.IsComputed || column.IsRowVersion || column.IsGeneratedAlways)
                 continue;
 
             if(excluded.Contains(column.Name))

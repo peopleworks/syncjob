@@ -127,6 +127,15 @@ public sealed partial class StagingTableFactory : IStagingTableFactory
     /// <summary>
     /// The destination's table model under the staging name, stripped of everything
     /// that is not a column.
+    /// <para>
+    /// Staging is an ordinary heap whatever the destination is. Until SqlSchemaDiff
+    /// 1.7.0 that was true by accident - the renderer did not know about system
+    /// versioning or memory-optimized tables and dropped both on the floor. 1.7.0
+    /// renders them faithfully, which is right for a schema diff and wrong here: a
+    /// staging table declared <c>MEMORY_OPTIMIZED</c> needs a filegroup the database
+    /// may not have, and one carrying <c>GENERATED ALWAYS</c> period columns cannot be
+    /// bulk copied into at all.
+    /// </para>
     /// </summary>
     internal static TableModel AsStaging(TableModel destination, SqlObjectName staging)
     {
@@ -141,18 +150,34 @@ public sealed partial class StagingTableFactory : IStagingTableFactory
         model.CheckConstraints = new List<CheckConstraintModel>();
         model.Indexes = new List<IndexModel>();
 
-        // A default constraint is an object in the schema, so carrying the
-        // destination's name for it collides on the first CREATE. The definition is
-        // kept and the name is not: SQL Server generates one.
-        model.Columns = destination.Columns.Select(column =>
-        {
-            if(column.DefaultDefinition is null)
-                return column;
+        model.TemporalType = null;
+        model.HistoryTableSchema = null;
+        model.HistoryTableName = null;
+        model.PeriodStartColumn = null;
+        model.PeriodEndColumn = null;
+        model.IsMemoryOptimized = false;
+        model.Durability = null;
 
-            var copy = column.Clone();
-            copy.DefaultIsSystemNamed = true;
-            return copy;
-        }).ToList();
+        model.Columns = destination.Columns
+
+            // The period columns go rather than being un-flagged. Kept as ordinary
+            // datetime2 columns they would be two columns staging has and the source
+            // does not, and the copy would refuse the step for a column nobody asked
+            // for. The destination still maintains its own.
+            .Where(column => column.GeneratedAlwaysType == 0)
+            .Select(column =>
+            {
+                if(column.DefaultDefinition is null)
+                    return column;
+
+                // A default constraint is an object in the schema, so carrying the
+                // destination's name for it collides on the first CREATE. The
+                // definition is kept and the name is not: SQL Server generates one.
+                var copy = column.Clone();
+                copy.DefaultIsSystemNamed = true;
+                return copy;
+            })
+            .ToList();
 
         return model;
     }

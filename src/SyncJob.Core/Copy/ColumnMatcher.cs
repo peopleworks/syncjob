@@ -1,4 +1,4 @@
-using SyncJob.Core.Catalog;
+﻿using SyncJob.Core.Catalog;
 
 namespace SyncJob.Core.Copy;
 
@@ -155,6 +155,17 @@ public static class ColumnMatcher
                 continue;
             }
 
+            if(target.IsGeneratedAlways)
+            {
+                // A period column of a system-versioned table. It is an ordinary
+                // datetime2 as far as anything can see, so this is the one unwritable
+                // column whose refusal arrives only from the server, at insert time.
+                problems.Add(
+                    $"the source column '{sourceName}' would be written to '{target.Name}', which {destinationTable} " +
+                    "maintains itself as a system-versioning period column: drop it from the query");
+                continue;
+            }
+
             if(filledBy.TryGetValue(target.Name, out var already))
             {
                 problems.Add(
@@ -167,7 +178,7 @@ public static class ColumnMatcher
 
         foreach(var column in destinationColumns)
         {
-            if(column.IsComputed || column.IsRowVersion || filledBy.ContainsKey(column.Name))
+            if(column.IsComputed || column.IsRowVersion || column.IsGeneratedAlways || filledBy.ContainsKey(column.Name))
                 continue;
 
             if(column.IsIdentity && !keepIdentity)

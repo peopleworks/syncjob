@@ -229,9 +229,13 @@ public sealed class SwapPublisher : IPublisher
 
         await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
 
-        // TRUNCATE is refused on a table another table's foreign key points at, and on
-        // a view there is nothing to truncate.
-        var empty = capability.IsTable && !capability.ReferencedByForeignKey
+        // TRUNCATE is refused on a table another table's foreign key points at, on a
+        // system-versioned table, and on a memory-optimized one; on a view there is
+        // nothing to truncate. DELETE is slower and is the only thing that works on any
+        // of them - and on a system-versioned destination it is also the right answer,
+        // because the rows it removes are written to the history table, which is the
+        // whole reason the destination is temporal.
+        var empty = capability.IsTable && !capability.ReferencedByForeignKey && !capability.RefusesTruncate
             ? $"TRUNCATE TABLE {destination.Quoted};"
             : $"DELETE FROM {destination.Quoted};";
 
@@ -313,11 +317,11 @@ public sealed class SwapPublisher : IPublisher
             .Select(x => x.Name)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-        // A computed column has no value to carry and a rowversion is stamped by the
-        // server on the way in, so naming either in the INSERT is an error rather than
-        // a preference.
+        // A computed column has no value to carry, a rowversion is stamped by the
+        // server on the way in, and a period column is maintained by system versioning,
+        // so naming any of them in the INSERT is an error rather than a preference.
         return destinationColumns
-            .Where(x => !x.IsComputed && !x.IsRowVersion && inStaging.Contains(x.Name))
+            .Where(x => !x.IsComputed && !x.IsRowVersion && !x.IsGeneratedAlways && inStaging.Contains(x.Name))
             .Select(x => new InsertColumn(x.Name, x.IsIdentity))
             .ToList();
     }
@@ -350,7 +354,11 @@ public sealed class SwapPublisher : IPublisher
 /// words rather than as error 4967.
 /// </para>
 /// </summary>
-internal sealed record SwapCapability(bool IsTable, bool ReferencedByForeignKey, string? BlockedBecause)
+internal sealed record SwapCapability(
+    bool IsTable,
+    bool ReferencedByForeignKey,
+    bool RefusesTruncate,
+    string? BlockedBecause)
 {
     public static async Task<SwapCapability> ReadAsync(
         SqlConnection connection,
@@ -400,7 +408,12 @@ internal sealed record SwapCapability(bool IsTable, bool ReferencedByForeignKey,
         var blocked = Blocked(
             isTable, referencedByForeignKey, isMemoryOptimized, isTemporal, partitions, destinationSpace, stagingSpace);
 
-        return new SwapCapability(isTable, referencedByForeignKey, blocked);
+        // Both of these refuse TRUNCATE as well as SWITCH, and the fallback path has
+        // to know: SQL Server answers a truncate on either with an error rather than by
+        // doing something slower. They are read here anyway to decide about the switch,
+        // so carrying them costs nothing.
+        return new SwapCapability(
+            isTable, referencedByForeignKey, isTemporal || isMemoryOptimized, blocked);
     }
 
     private static string? Blocked(

@@ -1,4 +1,4 @@
-using Microsoft.Data.SqlClient;
+﻿using Microsoft.Data.SqlClient;
 
 namespace SyncJob.Core.Catalog;
 
@@ -28,7 +28,18 @@ namespace SyncJob.Core.Catalog;
 /// and there is no way to ask it not to, so a source column aimed at one would be read,
 /// carried across the wire and then thrown away by the server without a word.
 /// </param>
-public sealed record CatalogColumn(string Name, bool IsComputed, bool IsIdentity, bool IsRowVersion = false);
+/// <param name="IsGeneratedAlways">
+/// True for a period column of a system-versioned table - the row-start and row-end
+/// times the server maintains. Unlike a computed column it holds real data of an
+/// ordinary type, so nothing about it looks unwritable until an insert is refused with
+/// "Cannot insert an explicit value into a GENERATED ALWAYS column".
+/// </param>
+public sealed record CatalogColumn(
+    string Name,
+    bool IsComputed,
+    bool IsIdentity,
+    bool IsRowVersion = false,
+    bool IsGeneratedAlways = false);
 
 /// <summary>
 /// Reads a table's columns from <c>sys.columns</c>, in <c>column_id</c> order.
@@ -49,7 +60,8 @@ public static class TableCatalog
     // the alias's own name instead.
     private const string Projection = """
         SELECT s.ord, c.name, c.is_computed, c.is_identity,
-               CASE WHEN TYPE_NAME(c.system_type_id) = 'timestamp' THEN 1 ELSE 0 END
+               CASE WHEN TYPE_NAME(c.system_type_id) = 'timestamp' THEN 1 ELSE 0 END,
+               CASE WHEN c.generated_always_type <> 0 THEN 1 ELSE 0 END
         FROM (VALUES {0}) AS s(ord, object_id)
         JOIN sys.columns AS c ON c.object_id = s.object_id
         ORDER BY s.ord, c.column_id;
@@ -139,7 +151,8 @@ public static class TableCatalog
                 reader.GetString(1),
                 reader.GetBoolean(2),
                 reader.GetBoolean(3),
-                reader.GetInt32(4) == 1));
+                reader.GetInt32(4) == 1,
+                reader.GetInt32(5) == 1));
         }
 
         return lists;
