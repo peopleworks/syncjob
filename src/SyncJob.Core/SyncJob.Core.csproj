@@ -25,6 +25,11 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Data.SqlClient" Version="6.1.2" />
+    <!-- The staging table is created from the destination's own catalog entry, and the
+         reader and the CREATE TABLE renderer that do it are SQLDiff's engine. Referenced
+         rather than copied: a second copy of a schema reader is a second copy of every
+         type-rendering bug it has already had fixed. -->
+    <PackageReference Include="PeopleWorks.SqlSchemaDiff.Core" Version="1.6.0" />
   </ItemGroup>
 
   <ItemGroup>
