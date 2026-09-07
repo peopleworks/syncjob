@@ -1,4 +1,4 @@
-using Microsoft.Data.Sqlite;
+﻿using Microsoft.Data.Sqlite;
 using System;
 using System.Collections.Generic;
 using System.Security.Cryptography;
@@ -11,7 +11,8 @@ namespace SyncJob.Database
     /// </summary>
     public class ConnectionRepository
     {
-        private static readonly byte[] EncryptionKey = Encoding.UTF8.GetBytes("SyncJob2025Key16"); // 16 bytes for AES128
+        // Solo para leer lo que la version anterior escribio. Ver DecryptString.
+        private static readonly byte[] EncryptionKey = Encoding.UTF8.GetBytes("SyncJob2025Key16");
 
         public static void Create(ConnectionEntity conn)
         {
@@ -138,24 +139,89 @@ INSERT INTO Connections (
             };
         }
 
-        // Simple encryption helpers (for demonstration - use proper encryption in production)
+        /// <summary>
+        /// Protege un secreto con DPAPI, en ambito de maquina.
+        /// </summary>
+        /// <remarks>
+        /// Esto era un XOR contra <c>EncryptionKey</c>, una constante de este mismo
+        /// archivo, en un repositorio publico. Cualquiera con el <c>syncjob.db</c>
+        /// recuperaba todas las contrasenas en cuatro lineas. El comentario original lo
+        /// decia -- "replace with proper AES in production" -- y se quedo.
+        ///
+        /// El ambito es LocalMachine y no Usuario a proposito: quien escribe estas filas
+        /// es una persona en una consola, y quien las lee de noche es el servicio de
+        /// Windows bajo otra cuenta. Con ambito de usuario el servicio no podria leer
+        /// nada de lo que el administrador guardo. A cambio, cualquiera que pueda
+        /// ejecutar codigo en esa maquina puede descifrarlas: DPAPI protege el archivo
+        /// si se lo llevan, no la maquina.
+        /// </remarks>
         public static byte[] EncryptString(string plainText)
         {
             if (string.IsNullOrEmpty(plainText)) return Array.Empty<byte>();
-            var bytes = Encoding.UTF8.GetBytes(plainText);
-            // Simple XOR encryption (replace with proper AES in production)
-            for (int i = 0; i < bytes.Length; i++)
-                bytes[i] ^= EncryptionKey[i % EncryptionKey.Length];
-            return bytes;
+
+            return ProtectedData.Protect(
+                Encoding.UTF8.GetBytes(plainText), null, DataProtectionScope.LocalMachine);
         }
 
+        /// <summary>
+        /// Abre un secreto guardado por <see cref="EncryptString"/>, y tambien uno
+        /// guardado por la version anterior.
+        /// </summary>
+        /// <remarks>
+        /// Lee las dos formas porque el arreglo escrito ayer sigue en la base de datos de
+        /// alguien, y negarse a leerlo dejaria ese trabajo sin poder correr. Una fila
+        /// vieja se queda en la forma vieja hasta que se vuelva a guardar
+        /// (<c>syncjob connection update --password ...</c>), asi que conviene rehacerlas.
+        ///
+        /// No modifica el arreglo que recibe. La version anterior hacia el XOR sobre el
+        /// arreglo del llamador, de modo que la segunda lectura de la misma entidad
+        /// devolvia basura.
+        /// </remarks>
         public static string DecryptString(byte[] encryptedBytes)
         {
             if (encryptedBytes == null || encryptedBytes.Length == 0) return string.Empty;
-            // Simple XOR decryption
-            for (int i = 0; i < encryptedBytes.Length; i++)
-                encryptedBytes[i] ^= EncryptionKey[i % EncryptionKey.Length];
-            return Encoding.UTF8.GetString(encryptedBytes);
+
+            foreach (var scope in new[] { DataProtectionScope.LocalMachine, DataProtectionScope.CurrentUser })
+            {
+                try
+                {
+                    return Encoding.UTF8.GetString(ProtectedData.Unprotect(encryptedBytes, null, scope));
+                }
+                catch (CryptographicException)
+                {
+                    // No lo escribio DPAPI en este ambito. Se prueba el siguiente y, al
+                    // final, la forma anterior.
+                }
+            }
+
+            var legacy = new byte[encryptedBytes.Length];
+            for (int i = 0; i < legacy.Length; i++)
+                legacy[i] = (byte)(encryptedBytes[i] ^ EncryptionKey[i % EncryptionKey.Length]);
+
+            return Encoding.UTF8.GetString(legacy);
+        }
+
+        /// <summary>
+        /// Si el secreto sigue guardado en la forma anterior, que es debil y conviene
+        /// rehacer. Lo usa <c>connection list</c> para avisar sin mostrar el secreto.
+        /// </summary>
+        public static bool IsLegacyFormat(byte[] encryptedBytes)
+        {
+            if (encryptedBytes == null || encryptedBytes.Length == 0) return false;
+
+            foreach (var scope in new[] { DataProtectionScope.LocalMachine, DataProtectionScope.CurrentUser })
+            {
+                try
+                {
+                    ProtectedData.Unprotect(encryptedBytes, null, scope);
+                    return false;
+                }
+                catch (CryptographicException)
+                {
+                }
+            }
+
+            return true;
         }
     }
 }

@@ -353,7 +353,7 @@ Sincronización completa: inserta, actualiza **y elimina**.
       "Enabled": true,
       "Mode": "Timestamp",
       "TrackingColumn": "FechaMod",
-      "TrackingTable": "dbo.SyncJobTracking",
+      "_TrackingTable": "opcional; el motor usa dbo.SyncJobWatermark si no se indica",
       "JobIdentifier": "Ventas_SQL2008_to_SQL2022",
       "ForceFullRefresh": false,
       "PrimaryKeyColumns": [ "IdVenta" ],
@@ -381,24 +381,40 @@ Sincronización completa: inserta, actualiza **y elimina**.
 SyncJob.exe run -c appsettings.json -s IncrementalSync --init-tracking
 ```
 
-Esto crea la tabla `dbo.SyncJobTracking` en el destino:
+Esto crea la tabla `dbo.SyncJobWatermark` en el destino:
 
 ```sql
-CREATE TABLE dbo.SyncJobTracking (
-    JobIdentifier NVARCHAR(255) NOT NULL PRIMARY KEY,
-    LastSyncTime DATETIME2 NOT NULL,
-    LastRowVersion VARBINARY(8) NULL,
-    LastChangeTrackingVersion BIGINT NULL,
-    RowsProcessed BIGINT NOT NULL,
-    RowsInserted BIGINT NOT NULL,
-    RowsUpdated BIGINT NOT NULL,
-    RowsDeleted BIGINT NOT NULL,
-    Success BIT NOT NULL,
-    ErrorMessage NVARCHAR(MAX) NULL,
-    CreatedAt DATETIME2 NOT NULL DEFAULT GETUTCDATE(),
-    UpdatedAt DATETIME2 NOT NULL DEFAULT GETUTCDATE()
+CREATE TABLE dbo.SyncJobWatermark (
+    JobId         NVARCHAR(200)     NOT NULL,
+    StepId        NVARCHAR(200)     NOT NULL,
+    Value         NVARCHAR(400)     NOT NULL,
+    PreviousValue NVARCHAR(400)         NULL,
+    UpdatedAt     DATETIMEOFFSET(7) NOT NULL,
+    PRIMARY KEY (JobId, StepId)
 );
 ```
+
+> **Si vienes de una versión anterior.** Hasta ahora la marca vivía en
+> `dbo.SyncJobTracking`, con una fila por *job*, porque el motor de entonces no tenía
+> pasos. Este los tiene, así que la marca se guarda por paso y la tabla es otra.
+>
+> **La tabla vieja no se toca.** Sigue donde está, con el historial de las corridas
+> anteriores, y el motor lo dice al importar la sección. Lo único que cambia es que la
+> primera corrida después de actualizar arranca desde `InitialValue` — para `Timestamp`,
+> el 1 de enero de 1900 — y por tanto lee todo una vez. Si eso no es aceptable en una
+> tabla grande, copie a mano el último valor:
+>
+> ```sql
+> INSERT INTO dbo.SyncJobWatermark (JobId, StepId, [Value], PreviousValue, UpdatedAt)
+> SELECT JobIdentifier, JobIdentifier,
+>        CONVERT(nvarchar(400), LastSyncTime, 126), NULL, SYSDATETIMEOFFSET()
+> FROM dbo.SyncJobTracking;
+> ```
+>
+> `StepId` es el nombre de la sección; con `JobIdentifier` puesto, ambos coinciden.
+> Apuntar `TrackingTable` a la tabla vieja **no** funciona: el motor comprueba la forma
+> antes de leerla y la rechaza nombrando lo que falta, en vez de fallar con un
+> `Invalid column name` que no dice nada.
 
 ---
 
@@ -590,22 +606,22 @@ ADD RowVer ROWVERSION;
 
 ---
 
-### 4. Monitorear Tabla de Tracking
+### 4. Monitorear la Marca
 
 ```sql
--- Ver historial de ejecuciones
-SELECT
-    JobIdentifier,
-    LastSyncTime,
-    RowsProcessed,
-    RowsInserted,
-    RowsUpdated,
-    RowsDeleted,
-    Success,
-    UpdatedAt
-FROM dbo.SyncJobTracking
+-- Por dónde va cada paso, y de dónde venía
+SELECT JobId, StepId, [Value], PreviousValue, UpdatedAt
+FROM dbo.SyncJobWatermark
 ORDER BY UpdatedAt DESC;
 ```
+
+`PreviousValue` está ahí a propósito: lo que un operador hace cuando algo sale mal es
+volver a correr desde donde estaba antes, y sin ese valor eso es adivinar.
+
+La tabla guarda **la marca, no las estadísticas**. Cuántas filas se movieron lo dice la
+corrida: la salida del comando, y el historial de ejecuciones del servicio. Son dos cosas
+distintas y mezclarlas fue lo que hizo que la tabla vieja creciera sin que nadie la
+leyera.
 
 ---
 
@@ -662,7 +678,7 @@ SyncJob.exe run -c config.json -s Job
 
 **Verificar:**
 ```sql
-SELECT * FROM dbo.SyncJobTracking WHERE JobIdentifier = 'tu_job_id';
+SELECT * FROM dbo.SyncJobWatermark WHERE JobId = 'tu_job_id';
 ```
 
 **Solución:**
@@ -688,25 +704,31 @@ CREATE INDEX IX_Tabla_TrackingColumn ON Tabla (TrackingColumn);
 ### Ver Estado del Job
 
 ```sql
-SELECT
-    JobIdentifier,
-    FORMAT(LastSyncTime, 'yyyy-MM-dd HH:mm:ss') AS LastSync,
-    FORMAT(RowsProcessed, 'N0') AS TotalRows,
-    FORMAT(RowsInserted, 'N0') AS Inserted,
-    FORMAT(RowsUpdated, 'N0') AS Updated,
-    FORMAT(RowsDeleted, 'N0') AS Deleted,
-    CASE WHEN Success = 1 THEN 'OK' ELSE 'ERROR' END AS Status,
-    ErrorMessage
-FROM dbo.SyncJobTracking
-WHERE JobIdentifier LIKE '%Cliente%'
-ORDER BY LastSyncTime DESC;
+SELECT JobId, StepId, [Value] AS Marca, PreviousValue AS Anterior, UpdatedAt
+FROM dbo.SyncJobWatermark
+WHERE JobId LIKE '%Cliente%'
+ORDER BY UpdatedAt DESC;
 ```
 
-### Resetear Tracking (forzar full refresh en próxima ejecución)
+### Resetear (forzar que la próxima corrida lea todo)
+
+Tres formas, de menos a más definitiva:
+
+```bash
+# Una sola corrida, sin tocar nada: la marca sigue donde está y vuelve a usarse después.
+SyncJob.exe run -c appsettings.json -s MiSeccion --full-refresh
+```
 
 ```sql
-DELETE FROM dbo.SyncJobTracking
-WHERE JobIdentifier = 'SQL2008_DBCliente_VistaCliente_TO_SQL2022_DBPropia_dbo_Cliente_Final';
+-- Volver a la corrida anterior, que es la razón por la que PreviousValue existe.
+UPDATE dbo.SyncJobWatermark
+SET [Value] = PreviousValue, UpdatedAt = SYSDATETIMEOFFSET()
+WHERE JobId = 'MiJob' AND StepId = 'MiPaso' AND PreviousValue IS NOT NULL;
+```
+
+```sql
+-- Desde cero. La próxima corrida arranca en InitialValue y lee todo.
+DELETE FROM dbo.SyncJobWatermark WHERE JobId = 'MiJob' AND StepId = 'MiPaso';
 ```
 
 ---
@@ -729,7 +751,7 @@ Para preguntas o issues:
 1. Revisar esta documentación
 2. Ejecutar con `--dry-run` para validar
 3. Verificar logs en `logs/SyncJob_yyyyMMdd.log`
-4. Consultar tabla `dbo.SyncJobTracking`
+4. Consultar tabla `dbo.SyncJobWatermark`
 
 ---
 
