@@ -53,7 +53,9 @@ jobs:
           Pop-Location
 
       - name: Pack the .NET tool
-        run: dotnet pack src/SyncJob.Cli/SyncJob.Cli.csproj src/SyncJob.Core/SyncJob.Core.csproj -c Release -o ./artifacts
+        run: |
+          dotnet pack src/SyncJob.Core/SyncJob.Core.csproj -c Release -o ./artifacts
+          dotnet pack src/SyncJob.Cli/SyncJob.Cli.csproj -c Release -o ./artifacts
 
       - name: Zip the executable
         shell: pwsh
