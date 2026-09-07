@@ -21,10 +21,12 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\SyncJob.Core\SyncJob.Core.csproj" />
 
-    <!-- The Windows service path has never had a live test, which is most of why it
-         still held a bug the CLI fixed in 2.3. ServiceLiveTests drives SyncTaskExecutor
-         end to end - its SQLite configuration store included - so the reference is to
-         the surface and not only to the engine. -->
+    <!-- The three surfaces are surfaces, not the engine: the CLI's own entry point, the
+         Windows service with its SQLite store, and the central command whose job and
+         whose credentials both come out of a catalog the Core cannot reach. All three
+         are driven end to end here, which is why the reference is to SyncJob.Cli and not
+         only to SyncJob.Core. The service path in particular had never had a live test,
+         and that is most of why it still held a bug the CLI fixed in 2.3. -->
     <ProjectReference Include="..\..\src\SyncJob.Cli\SyncJob.Cli.csproj" />
   </ItemGroup>
 
