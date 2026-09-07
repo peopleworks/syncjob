@@ -33,7 +33,9 @@ jobs:
         run: dotnet test tests/SyncJob.Core.Tests -c Release --no-build --verbosity normal
 
       - name: Pack (verify the tool package builds)
-        run: dotnet pack src/SyncJob.Cli/SyncJob.Cli.csproj src/SyncJob.Core/SyncJob.Core.csproj -c Release -o ./artifacts
+        run: |
+          dotnet pack src/SyncJob.Core/SyncJob.Core.csproj -c Release -o ./artifacts
+          dotnet pack src/SyncJob.Cli/SyncJob.Cli.csproj -c Release -o ./artifacts
 
       # Cada comando de la CLI tiene que arrancar sin reventar. Suena obvio y no
       # lo era: `examples` fallaba con "Could not find color or style
