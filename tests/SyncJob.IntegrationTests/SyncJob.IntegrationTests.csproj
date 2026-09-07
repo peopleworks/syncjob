@@ -20,6 +20,12 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\SyncJob.Core\SyncJob.Core.csproj" />
+
+    <!-- The Windows service path has never had a live test, which is most of why it
+         still held a bug the CLI fixed in 2.3. ServiceLiveTests drives SyncTaskExecutor
+         end to end - its SQLite configuration store included - so the reference is to
+         the surface and not only to the engine. -->
+    <ProjectReference Include="..\..\src\SyncJob.Cli\SyncJob.Cli.csproj" />
   </ItemGroup>
 
 </Project>

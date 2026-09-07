@@ -40,6 +40,26 @@ namespace SyncJob.Services.Models
     public class SyncTaskExecutionResult
     {
         public bool Success { get; set; }
+
+        /// <summary>
+        /// True when the run deliberately did not write: a guard that refused, or a lease
+        /// another host holds.
+        /// <para>
+        /// It is a kind of success and not a kind of failure - a night of skips is a
+        /// report and a night of failures is a phone call - but it is not the same thing
+        /// as a load that happened, and a caller that logs "completed successfully" for
+        /// one is telling the operator the table was refreshed when it was not.
+        /// </para>
+        /// </summary>
+        public bool Skipped { get; set; }
+
+        /// <summary>
+        /// What the run's steps had to say: why the guard refused, which host holds the
+        /// lease, what could not be carried across. Null when everything published
+        /// quietly.
+        /// </summary>
+        public string? Notes { get; set; }
+
         public long DurationMs { get; set; }
         public long RowsProcessed { get; set; }
         public long RowsInserted { get; set; }

@@ -129,17 +129,34 @@ namespace SyncJob.Services
                         LoggerFactory.Create(builder => builder.AddConsole())
                             .CreateLogger<SyncTaskExecutor>());
 
-                // Ejecutar tarea
-                var result = await executor.ExecuteTaskAsync(task);
+                // Ejecutar tarea. El token del servicio llega hasta el motor: una parada
+                // de Windows cancela la copia en vuelo en lugar de esperarla, y el motor
+                // devuelve lo que alcanzó a hacer en lugar de lanzar.
+                var result = await executor.ExecuteTaskAsync(task, stoppingToken);
 
                 // Actualizar estado según resultado
                 if (result.Success)
                 {
                     await monitor.MarkTaskAsCompletedAsync(task.TaskId, result);
 
-                    _logger.LogInformation(
-                        "Task {TaskId} completed successfully. Duration: {Duration}ms, Rows: {Rows}",
-                        task.TaskId, result.DurationMs, result.RowsProcessed);
+                    // Un skip es un éxito con algo que decir: la tabla que alguien pidió
+                    // cargar deliberadamente no se cargó. Se reporta en information y no
+                    // como error - un servicio que despierta a alguien a las 02:00 porque
+                    // el lease funcionó es un servicio que la gente apaga - pero no se
+                    // reporta como "completed successfully", que sería decir que la tabla
+                    // se refrescó cuando no se refrescó.
+                    if (result.Skipped)
+                    {
+                        _logger.LogInformation(
+                            "Task {TaskId} was skipped and nothing was written. Duration: {Duration}ms. {Notes}",
+                            task.TaskId, result.DurationMs, result.Notes);
+                    }
+                    else
+                    {
+                        _logger.LogInformation(
+                            "Task {TaskId} completed successfully. Duration: {Duration}ms, Rows: {Rows}",
+                            task.TaskId, result.DurationMs, result.RowsProcessed);
+                    }
 
                     // Enviar email de notificación si está configurado
                     if (task.NotifyOnComplete && !string.IsNullOrWhiteSpace(task.NotificationEmail))
