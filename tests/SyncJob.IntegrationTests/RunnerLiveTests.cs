@@ -284,7 +284,7 @@ public sealed class RunnerLiveTests(SqlServerFixture fixture)
         var job = Job(source, destination, Step(PublicationMode.Replace));
 
         var leases = new SqlJobLeaseStore();
-        await leases.EnsureTableAsync(destination, CancellationToken.None);
+        await leases.EnsureReadyAsync(destination, CancellationToken.None);
 
         var held = await leases.TryAcquireAsync(
             destination, job.Id, "a-run-on-another-host", "elsewhere/1", TimeSpan.FromMinutes(30), CancellationToken.None);

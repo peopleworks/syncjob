@@ -1,4 +1,4 @@
-using SyncJob.Core.Copy;
+﻿using SyncJob.Core.Copy;
 using SyncJob.Core.Incremental;
 using SyncJob.Core.Model;
 using SyncJob.Core.Run;
@@ -416,6 +416,44 @@ public sealed class RunnerTests
         Assert.Equal(settled, leases.Renewals);
     }
 
+    /// <summary>
+    /// A run whose lease is taken over by another host stops where it is.
+    /// <para>
+    /// This could not be expressed until <c>RenewAsync</c> returned something. While it
+    /// returned <c>Task</c>, a renewal that found the claim gone looked exactly like a
+    /// renewal that hit a bad connection, and the runner - correctly, on that information -
+    /// carried on. Which meant the one case the lease exists to prevent was the one case
+    /// it could not react to: two runs writing the same tables, one of them convinced it
+    /// still held the job.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task ARunWhoseLeaseIsTakenOverStopsWhereItIs()
+    {
+        var leases = new FakeLeases { RenewalsBeforeLosingTheLease = 1 };
+        var job = Job(Step());
+        job.LeaseDuration = TimeSpan.FromMilliseconds(300);
+
+        var slow = Runner(copier: new FakeCopier(null, async _ =>
+        {
+            await Task.Delay(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            return new CopyResult(10, TimeSpan.Zero);
+        }));
+
+        var run = await new JobRunner(leases, slow).RunAsync(job, new JobRunOptions { UseLease = true }, default);
+
+        Assert.Equal(RunStatus.Failed, run.Status);
+
+        var runLevel = Assert.Single(run.Steps, x => x.StepId == JobRunner.RunLevelStepId);
+        Assert.Contains("took over this job's lease", runLevel.Message!, StringComparison.Ordinal);
+        Assert.Contains("two runs writing the same tables", runLevel.Message, StringComparison.Ordinal);
+
+        // It stopped rather than running the five seconds out.
+        Assert.True(
+            run.Steps.Any(x => x.StepId != JobRunner.RunLevelStepId && x.Status == RunStatus.Failed),
+            "the step should have been stopped, not left to finish under a lease this run no longer held");
+    }
+
     [Theory]
     [InlineData(180, 60)]
     [InlineData(3, 1)]
@@ -702,7 +740,11 @@ public sealed class RunnerTests
         public Task<CopyResult> CopyAsync(CopyRequest request, string targetTable, CancellationToken cancellationToken)
         {
             log?.Add("copy");
-            return copy(request);
+
+            // WaitAsync so the fake honours the token the way SqlTableCopier does. Without
+            // it a copy is uninterruptible here and nothing that cancels a run mid-copy -
+            // a lost lease, the caller's own token - can be tested at all.
+            return copy(request).WaitAsync(cancellationToken);
         }
     }
 
@@ -821,11 +863,17 @@ public sealed class RunnerTests
             return Task.FromResult(lease);
         }
 
-        public Task RenewAsync(string connectionString, string jobId, RunLease lease, CancellationToken cancellationToken)
+        /// <summary>How many renewals happen before the lease is reported gone. Never, by default.</summary>
+        public int RenewalsBeforeLosingTheLease { get; init; } = int.MaxValue;
+
+        public Task<bool> RenewAsync(string connectionString, string jobId, RunLease lease, CancellationToken cancellationToken)
         {
-            Interlocked.Increment(ref _renewals);
-            return Task.CompletedTask;
+            var renewals = Interlocked.Increment(ref _renewals);
+            return Task.FromResult(renewals <= RenewalsBeforeLosingTheLease);
         }
+
+        public Task EnsureReadyAsync(string connectionString, CancellationToken cancellationToken) =>
+            Task.CompletedTask;
 
         public Task ReleaseAsync(string connectionString, string jobId, RunLease lease, CancellationToken cancellationToken)
         {

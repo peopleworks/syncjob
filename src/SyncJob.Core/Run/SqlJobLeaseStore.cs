@@ -1,54 +1,8 @@
-using Microsoft.Data.SqlClient;
+﻿using Microsoft.Data.SqlClient;
 using SyncJob.Core.Model;
 using SyncJob.Core.Publication;
 
 namespace SyncJob.Core.Run;
-
-/// <summary>
-/// Thrown when a run asks to renew a lease it no longer holds - because the lease
-/// expired and another host took it over, or because this run released it already.
-/// <para>
-/// Renewal is the only place this engine can notice that a run has been superseded, and
-/// a run that has been superseded is writing into a destination another run now owns.
-/// Failing loudly is the point: the alternative is a silent no-op and two runs loading
-/// the same table, which is the exact failure the lease exists to prevent.
-/// </para>
-/// <para>
-/// It derives from <see cref="InvalidOperationException"/> so a runner that catches the
-/// general case keeps working, and one that wants to report "another host took this job"
-/// in particular has a type to catch.
-/// </para>
-/// </summary>
-public sealed class JobLeaseLostException : InvalidOperationException
-{
-    public JobLeaseLostException(string jobId, string runId)
-        : base($"run '{runId}' no longer holds the lease on job '{jobId}': it expired and another host " +
-               "took it over, or this run released it. Nothing more may be written for this run.")
-    {
-        JobId = jobId;
-        RunId = runId;
-    }
-
-    public JobLeaseLostException()
-    {
-    }
-
-    public JobLeaseLostException(string message)
-        : base(message)
-    {
-    }
-
-    public JobLeaseLostException(string message, Exception innerException)
-        : base(message, innerException)
-    {
-    }
-
-    /// <summary>The job whose lease was lost.</summary>
-    public string JobId { get; } = string.Empty;
-
-    /// <summary>The run that thought it still held it.</summary>
-    public string RunId { get; } = string.Empty;
-}
 
 /// <summary>
 /// Keeps one row per job in a table in the destination database saying who holds the job
@@ -126,7 +80,7 @@ public sealed class SqlJobLeaseStore : IJobLeaseStore
     /// loser gets error 2714 and has exactly what it wanted anyway.
     /// </para>
     /// </summary>
-    public async Task EnsureTableAsync(string connectionString, CancellationToken cancellationToken)
+    public async Task EnsureReadyAsync(string connectionString, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(connectionString);
 
@@ -265,12 +219,14 @@ public sealed class SqlJobLeaseStore : IJobLeaseStore
     /// night would end the night holding the job for hours after the process died.
     /// </para>
     /// </summary>
-    /// <exception cref="JobLeaseLostException">
-    /// This run no longer holds the lease. It throws rather than returning quietly because a
-    /// long run that has been superseded is writing into a destination another run now owns,
-    /// and it needs to find out.
-    /// </exception>
-    public async Task RenewAsync(
+    /// <returns>
+    /// False when this run no longer holds the lease: another host took it over, or the run
+    /// released it and is now trying to resurrect a claim it gave up. False rather than an
+    /// exception because a renewal that fails on a blinking network is a different fact from
+    /// one that fails because the claim is gone, and only the caller can tell what to do
+    /// about each - see <see cref="IJobLeaseStore.RenewAsync"/>.
+    /// </returns>
+    public async Task<bool> RenewAsync(
         string connectionString,
         string jobId,
         RunLease lease,
@@ -302,9 +258,10 @@ public sealed class SqlJobLeaseStore : IJobLeaseStore
             ("@job", jobId), ("@run", lease.RunId)).ConfigureAwait(false);
 
         if(expiresAt is null)
-            throw new JobLeaseLostException(jobId, lease.RunId);
+            return false;
 
         lease.ExpiresAt = (DateTimeOffset)expiresAt;
+        return true;
     }
 
     /// <summary>
@@ -377,7 +334,7 @@ public sealed class SqlJobLeaseStore : IJobLeaseStore
     /// <c>IF</c> would have run.
     /// <para>
     /// Called before every operation rather than only by the runner, so a surface that
-    /// forgot to call <see cref="EnsureTableAsync(string, CancellationToken)"/> gets a
+    /// forgot to call <see cref="EnsureReadyAsync(string, CancellationToken)"/> gets a
     /// working lease instead of an "invalid object name", and so that renewing against a
     /// table that is not there reports a lost lease rather than a SQL error.
     /// </para>

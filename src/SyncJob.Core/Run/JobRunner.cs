@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using SyncJob.Core.Model;
 
 namespace SyncJob.Core.Run;
@@ -174,14 +174,17 @@ public sealed class JobRunner
 
         run.Lease = lease;
 
+        // The steps run under this rather than under the caller's token, so that losing
+        // the lease stops them. A superseded run is writing into a destination another run
+        // now owns, which is the one thing the lease exists to prevent.
         using var renewal = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var renewing = lease is null
-            ? Task.CompletedTask
-            : RenewAsync(destinationConnectionString, job, lease, options, renewal.Token);
+            ? Task.FromResult(true)
+            : RenewAsync(destinationConnectionString, job, lease, options, renewal);
 
         try
         {
-            await RunStepsAsync(job, run, options, destinationConnectionString, cancellationToken).ConfigureAwait(false);
+            await RunStepsAsync(job, run, options, destinationConnectionString, renewal.Token).ConfigureAwait(false);
         }
         finally
         {
@@ -190,7 +193,28 @@ public sealed class JobRunner
             // Joined rather than abandoned: a renewal already in flight when the lease is
             // released would put the claim back seconds after the run gave it up, and the
             // next host would then wait out a whole lease duration for nothing.
-            await Task.WhenAll(renewing).ConfigureAwait(false);
+            var held = await renewing.ConfigureAwait(false);
+
+            if(!held)
+            {
+                var message =
+                    $"another host took over this job's lease while the run was going, so it stopped where it was. " +
+                    "This run had been superseded: carrying on would have meant two runs writing the same tables. " +
+                    "Whatever it had already published is published, and the steps below say how far it got.";
+
+                run.Steps.Add(new StepResult
+                {
+                    RunId = run.RunId,
+                    StepId = RunLevelStepId,
+                    StepName = "the run itself",
+                    StartedAt = DateTimeOffset.UtcNow,
+                    FinishedAt = DateTimeOffset.UtcNow,
+                    Status = RunStatus.Failed,
+                    Message = message
+                });
+
+                Report(options, RunLevelStepId, message);
+            }
 
             if(lease is not null)
                 await ReleaseAsync(destinationConnectionString, job, run, lease, options).ConfigureAwait(false);
@@ -364,10 +388,7 @@ public sealed class JobRunner
         if(!options.UseLease || options.DryRun)
             return null;
 
-        // Through the concrete type, because IJobLeaseStore has no EnsureTableAsync: the
-        // table has to exist before the first acquire and only the SQL store has one.
-        if(_leases is SqlJobLeaseStore store)
-            await store.EnsureTableAsync(destinationConnectionString, cancellationToken).ConfigureAwait(false);
+        await _leases.EnsureReadyAsync(destinationConnectionString, cancellationToken).ConfigureAwait(false);
 
         return await _leases
             .TryAcquireAsync(destinationConnectionString, job.Id, run.RunId, Holder(), job.LeaseDuration, cancellationToken)
@@ -384,20 +405,23 @@ public sealed class JobRunner
     /// as long as the run lasts.
     /// </para>
     /// <para>
-    /// A renewal that fails is reported and tried again rather than being fatal.
-    /// <see cref="IJobLeaseStore.RenewAsync"/> returns nothing, so this cannot tell a
-    /// lease another host has taken over from a connection that blipped - and abandoning a
-    /// run half way through a publication on the strength of a guess is worse than the
-    /// overlap it would be avoiding.
+    /// The two ways a renewal can fail are answered differently, which is the whole reason
+    /// <see cref="IJobLeaseStore.RenewAsync"/> returns a bool rather than throwing. An
+    /// <b>exception</b> is an accident - a connection that blipped - and is reported and
+    /// tried again, because abandoning a run half way through a publication on the
+    /// strength of a network error is worse than the overlap it would avoid. <b>False</b>
+    /// is a fact: the claim is gone, another host owns the destination, and this run stops.
     /// </para>
     /// </summary>
-    private async Task RenewAsync(
+    /// <returns>True while this run still held its lease; false once another host took it.</returns>
+    private async Task<bool> RenewAsync(
         string destinationConnectionString,
         SyncJobDefinition job,
         RunLease lease,
         JobRunOptions options,
-        CancellationToken cancellationToken)
+        CancellationTokenSource renewal)
     {
+        var cancellationToken = renewal.Token;
         var interval = RenewalInterval(job.LeaseDuration);
         using var timer = new PeriodicTimer(interval);
 
@@ -407,13 +431,20 @@ public sealed class JobRunner
             {
                 try
                 {
-                    await _leases
+                    var held = await _leases
                         .RenewAsync(destinationConnectionString, job.Id, lease, cancellationToken)
                         .ConfigureAwait(false);
+
+                    if(!held)
+                    {
+                        // Stops the steps, which are running under this token.
+                        await renewal.CancelAsync().ConfigureAwait(false);
+                        return false;
+                    }
                 }
                 catch(OperationCanceledException) when(cancellationToken.IsCancellationRequested)
                 {
-                    return;
+                    return true;
                 }
                 catch(Exception e)
                 {
@@ -429,6 +460,8 @@ public sealed class JobRunner
         {
             // The run finished and the loop is torn down with it.
         }
+
+        return true;
     }
 
     /// <summary>

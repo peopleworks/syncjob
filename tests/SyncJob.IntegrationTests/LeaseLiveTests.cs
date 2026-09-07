@@ -1,4 +1,4 @@
-using SyncJob.Core.Model;
+﻿using SyncJob.Core.Model;
 using SyncJob.Core.Run;
 
 namespace SyncJob.IntegrationTests;
@@ -234,7 +234,7 @@ public sealed class LeaseLiveTests(SqlServerFixture fixture)
     /// owns, which is the exact thing the lease exists to prevent.
     /// </summary>
     [LiveFact]
-    public async Task RenewingALeaseAnotherHostTookOverThrows_AndDoesNotTakeItBack()
+    public async Task RenewingALeaseAnotherHostTookOverSaysSo_AndDoesNotTakeItBack()
     {
         var connectionString = await fixture.CreateDatabaseAsync();
         var store = new SqlJobLeaseStore();
@@ -251,11 +251,11 @@ public sealed class LeaseLiveTests(SqlServerFixture fixture)
 
         Assert.NotNull(taken);
 
-        var thrown = await Assert.ThrowsAsync<JobLeaseLostException>(
-            () => store.RenewAsync(connectionString, "nightly", lost, CancellationToken.None));
-
-        Assert.Equal("nightly", thrown.JobId);
-        Assert.Equal("run-1", thrown.RunId);
+        // False rather than an exception: the claim being gone is a fact this run has to
+        // act on, and a caller that cannot separate it from a connection that blipped
+        // either abandons publications on transient errors or carries on after being
+        // superseded. Both are worse than knowing.
+        Assert.False(await store.RenewAsync(connectionString, "nightly", lost, CancellationToken.None));
 
         // And the host that does hold it still does, with its expiry untouched.
         Assert.Equal("run-2", await ColumnAsync(connectionString, "RunId", "nightly"));
@@ -274,8 +274,7 @@ public sealed class LeaseLiveTests(SqlServerFixture fixture)
         Assert.NotNull(lease);
         await store.ReleaseAsync(connectionString, "nightly", lease, CancellationToken.None);
 
-        await Assert.ThrowsAsync<JobLeaseLostException>(
-            () => store.RenewAsync(connectionString, "nightly", lease, CancellationToken.None));
+        Assert.False(await store.RenewAsync(connectionString, "nightly", lease, CancellationToken.None));
 
         // Still free: the renewal did not resurrect a claim the run had given up.
         Assert.NotNull(await store.TryAcquireAsync(
@@ -411,7 +410,7 @@ public sealed class LeaseLiveTests(SqlServerFixture fixture)
             var racers = Enumerable.Range(0, hosts).Select(_ => Task.Run(async () =>
             {
                 await gate.Task;
-                await store.EnsureTableAsync(connectionString, CancellationToken.None);
+                await store.EnsureReadyAsync(connectionString, CancellationToken.None);
             })).ToArray();
 
             gate.SetResult();
@@ -441,7 +440,7 @@ public sealed class LeaseLiveTests(SqlServerFixture fixture)
 
         // The table and the connection pool are warm before the timing matters, so the race
         // is over the lease and not over who pays for the first connection.
-        await store.EnsureTableAsync(connectionString, CancellationToken.None);
+        await store.EnsureReadyAsync(connectionString, CancellationToken.None);
 
         var wrong = new List<string>();
 

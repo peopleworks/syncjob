@@ -206,7 +206,25 @@ public interface IJobLeaseStore
         TimeSpan duration,
         CancellationToken cancellationToken);
 
-    Task RenewAsync(string connectionString, string jobId, RunLease lease, CancellationToken cancellationToken);
+    /// <summary>
+    /// Prepares whatever the store keeps its leases in, before the first acquire. Safe to
+    /// call on every run and from two hosts at once - which is not the exotic case, since
+    /// two hosts racing here are two hosts trying to start the same job.
+    /// </summary>
+    Task EnsureReadyAsync(string connectionString, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Extends the claim, and says whether it was still there to extend.
+    /// <para>
+    /// False means another host has taken the lease over - this run has been superseded
+    /// and should stop, because carrying on means two runs writing one table. It is
+    /// deliberately not an exception: a renewal that fails because the network blinked is
+    /// a different thing from one that fails because the claim is gone, and a long run
+    /// that abandons a publication on the first transient error is worse than the overlap
+    /// it was avoiding. So the false is the fact, and the exception stays the accident.
+    /// </para>
+    /// </summary>
+    Task<bool> RenewAsync(string connectionString, string jobId, RunLease lease, CancellationToken cancellationToken);
 
     Task ReleaseAsync(string connectionString, string jobId, RunLease lease, CancellationToken cancellationToken);
 }

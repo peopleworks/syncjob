@@ -1,4 +1,4 @@
-using SyncJob.Core.Model;
+﻿using SyncJob.Core.Model;
 using SyncJob.Core.Run;
 
 namespace SyncJob.Core.Tests;
@@ -88,22 +88,6 @@ public sealed class LeaseTests
             () => store.RenewAsync(Nowhere, "nightly", null!, CancellationToken.None));
         await Assert.ThrowsAsync<ArgumentNullException>(
             () => store.ReleaseAsync(Nowhere, "nightly", null!, CancellationToken.None));
-    }
-
-    /// <summary>
-    /// The message is what an operator reads at three in the morning, so it names both the
-    /// job and the run rather than saying that something went wrong.
-    /// </summary>
-    [Fact]
-    public void ALostLeaseSaysWhichRunLostWhichJob()
-    {
-        var thrown = new JobLeaseLostException("nightly", "run-1");
-
-        Assert.Equal("nightly", thrown.JobId);
-        Assert.Equal("run-1", thrown.RunId);
-        Assert.Contains("nightly", thrown.Message, StringComparison.Ordinal);
-        Assert.Contains("run-1", thrown.Message, StringComparison.Ordinal);
-        Assert.IsAssignableFrom<InvalidOperationException>(thrown);
     }
 
     /// <summary>
