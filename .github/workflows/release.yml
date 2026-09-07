@@ -124,6 +124,9 @@ jobs:
             syncjob --version
             ```
 
+            **Upgrading?** [CHANGELOG.md](https://github.com/peopleworks/syncjob/blob/main/CHANGELOG.md)
+            carries the migration steps for anything whose behaviour changed.
+
             **Requires** SQL Server 2016+. Windows is required for Windows Service
             mode and for DPAPI credential encryption.
 
