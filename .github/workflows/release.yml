@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write # required to obtain the OIDC token for trusted publishing
 
 jobs:
   release:
@@ -57,6 +58,40 @@ jobs:
           dotnet pack src/SyncJob.Core/SyncJob.Core.csproj -c Release -o ./artifacts
           dotnet pack src/SyncJob.Cli/SyncJob.Cli.csproj -c Release -o ./artifacts
 
+      # La etiqueta manda sobre la version del CLI, que es el producto de este
+      # repositorio; el Core lleva su propia linea y no tiene por que coincidir.
+      #
+      # Existe porque --skip-duplicate se traga una etiqueta que no corresponde a
+      # ninguna version empaquetada: el push "tiene exito", no publica nada, y el
+      # release queda anunciando una version que no esta en NuGet.
+      - name: Assert the tag matches the packed CLI
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          expected="./artifacts/PeopleWorks.SyncJob.Cli.${version}.nupkg"
+          if [ ! -f "$expected" ]; then
+            echo "::error::La etiqueta ${GITHUB_REF_NAME} no corresponde a ningun paquete empaquetado."
+            echo "Se esperaba $expected. Lo que hay:"
+            ls -1 ./artifacts/*.nupkg
+            exit 1
+          fi
+          echo "$expected"
+
+      # El Core es una libreria y se referencia desde otros repositorios, asi que
+      # va con simbolos. Sin esta comprobacion, quitar IncludeSymbols del csproj
+      # publica una libreria sin depurable y nadie se entera hasta que alguien
+      # intenta entrar en ella.
+      - name: Assert the Core carries its symbols
+        shell: bash
+        run: |
+          shopt -s nullglob
+          symbols=(./artifacts/PeopleWorks.SyncJob.Core.*.snupkg)
+          if [ ${#symbols[@]} -eq 0 ]; then
+            echo "::error::No hay .snupkg junto a PeopleWorks.SyncJob.Core: la libreria se publicaria sin simbolos."
+            exit 1
+          fi
+          echo "${symbols[@]}"
+
       - name: Zip the executable
         shell: pwsh
         run: |
@@ -95,15 +130,44 @@ jobs:
             Companion tool: [SQLDiff](https://github.com/peopleworks/SqlSchemaDiff)
             moves the schema, SyncJob moves the data.
 
-      # Se publica a NuGet solo si el secreto existe. El contexto `secrets` no
-      # esta disponible en un `if` de paso, asi que el valor se lee via env,
-      # que si lo esta.
+      # Trusted publishing: sin clave guardada. La politica vive en
+      # nuget.org -> Account -> Trusted Publishing:
+      #
+      #   Package Owner: peopleworksservices   Repository Owner: peopleworks
+      #   Repository: syncjob                  Workflow File: release.yml
+      #   Environment: (vacio)                 Glob: PeopleWorks.SyncJob.*
+      #
+      # Environment vacio a proposito: este workflow no declara ninguno, y una
+      # politica que exija uno no encaja y el push responde 403.
+      #
+      # Reemplaza a un push con `secrets.NUGET_API_KEY` guardado por
+      # `if: env.NUGET_API_KEY != ''`. Ese guardia es la razon por la que este
+      # repositorio lleva meses etiquetando releases que no publican nada: sin el
+      # secreto, el paso se saltaba en silencio y el workflow terminaba en verde.
+      - name: NuGet login (trusted publishing)
+        id: login
+        uses: NuGet/login@v1
+        with:
+          user: peopleworksservices
+
+      # El glob lo expande el shell, un push por paquete. Dejarselo al cliente de
+      # NuGet funciona en ubuntu pero no aqui: en Windows toma ./artifacts/*.nupkg
+      # literalmente y responde "File does not exist".
+      #
+      # Solo *.nupkg: el cliente sube el .snupkg que este al lado por su cuenta.
       - name: Push to NuGet
-        env:
-          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
-        if: env.NUGET_API_KEY != ''
-        run: >
-          dotnet nuget push ./artifacts/*.nupkg
-          --api-key $env:NUGET_API_KEY
-          --source https://api.nuget.org/v3/index.json
-          --skip-duplicate
+        shell: bash
+        run: |
+          shopt -s nullglob
+          packages=(./artifacts/*.nupkg)
+          if [ ${#packages[@]} -eq 0 ]; then
+            echo "::error::No hay paquetes en ./artifacts que publicar."
+            exit 1
+          fi
+          for pkg in "${packages[@]}"; do
+            echo "--- pushing $pkg"
+            dotnet nuget push "$pkg" \
+              --api-key "${{ steps.login.outputs.NUGET_API_KEY }}" \
+              --source https://api.nuget.org/v3/index.json \
+              --skip-duplicate
+          done
