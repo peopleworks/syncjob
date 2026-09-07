@@ -348,19 +348,19 @@ footer b{color:var(--tx)}
 <span class="k">.\SyncJob.exe</span> <span class="o">--version</span>
 
 <span class="c"># <span class="es">o como herramienta global</span><span class="en">or as a global tool</span></span>
-<span class="k">dotnet</span> tool install <span class="o">-g</span> <span class="v">PeopleWorks.SyncJob</span>
+<span class="k">dotnet</span> tool install <span class="o">-g</span> <span class="v">PeopleWorks.SyncJob.Cli</span>
 <span class="k">syncjob</span> <span class="o">--version</span></code></pre></div>
       <p class="es"><a href="https://github.com/peopleworks/syncjob/releases/latest">Último release ↗</a> ·
-        <a href="https://www.nuget.org/packages/PeopleWorks.SyncJob">NuGet ↗</a></p>
+        <a href="https://www.nuget.org/packages/PeopleWorks.SyncJob.Cli">NuGet ↗</a></p>
       <p class="en"><a href="https://github.com/peopleworks/syncjob/releases/latest">Latest release ↗</a> ·
-        <a href="https://www.nuget.org/packages/PeopleWorks.SyncJob">NuGet ↗</a></p>
+        <a href="https://www.nuget.org/packages/PeopleWorks.SyncJob.Cli">NuGet ↗</a></p>
     </div>
 
     <div class="card">
       <h3><span class="es">Compilar desde el código</span><span class="en">Build from source</span></h3>
       <div class="cmd"><pre><code><span class="k">git</span> clone https://github.com/peopleworks/syncjob.git
 <span class="k">cd</span> syncjob
-<span class="k">dotnet</span> publish SyncJob.csproj <span class="o">`</span>
+<span class="k">dotnet</span> publish src/SyncJob.Cli/SyncJob.Cli.csproj <span class="o">`</span>
   <span class="o">-c</span> <span class="v">Release</span> <span class="o">-r</span> <span class="v">win-x64</span> <span class="o">`</span>
   <span class="o">--self-contained</span> <span class="v">true</span> <span class="o">`</span>
   <span class="o">-p:PublishSingleFile=</span><span class="v">true</span> <span class="o">`</span>
