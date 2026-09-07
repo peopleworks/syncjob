@@ -693,16 +693,25 @@ SyncJob.exe  run   -c appsettings.json --all
 
 ---
 
-## What's New in 2.3.0
+## What's New in 3.0.0
+
+The engine comes out of the CLI and becomes a package. `PeopleWorks.SyncJob.Core` is
+published alongside this release, and the CLI, the Windows service and the central
+command all run on it — there were three copies of the pipeline and they had drifted.
+
+**Three things change behaviour. [CHANGELOG.md](CHANGELOG.md) has the migration for each.**
 
 | | Change |
 |---|---|
-| 🔴 | **`MinRowThresholdToCommit` now applies to the `run-db` path too.** It was implemented only in the JSON path — the Windows Service route went straight to commit without evaluating it. A source returning 3 rows instead of 5,435 would truncate the destination and leave 3. Root cause: the load/commit code was duplicated across two files and the copies had drifted. The duplication is gone; both paths share one implementation. |
-| 🔴 | **Full refresh swaps tables by name instead of `TRUNCATE`.** Readers no longer block for the duration of the load. Measured: **~15 s → ~370 ms** on 122,590 rows. |
-| 🟠 | **Explicit column list** in the stage→final insert instead of `SELECT *`. If the two tables ever diverge, it now fails loudly rather than shifting data silently. |
-| 🟡 | **`secrets protect` / `secrets status`** — DPAPI encryption for the passwords in `appsettings.json`. |
-| 🟡 | **`run --all`** — run every section of a config file in one command. |
-| 🟢 | **Automatic column mappings** when source and destination names match. |
+| 🔴 | **The Windows service could empty a production table and report success.** It published with `TRUNCATE` + `INSERT ... SELECT *`, and its only check asked whether the bulk copy had lost rows — not whether the load was plausible. A source returning nothing gave `0 == 0` and passed. 2.3.0's notes said the duplication was gone; there were three copies and only one had been fixed. |
+| 🔴 | **The watermark moved** to `dbo.SyncJobWatermark`, keyed per step. Your old `dbo.SyncJobTracking` is untouched, history and all; the first run after upgrading reads everything once unless you carry the value across. |
+| 🔴 | **`"Mode": "Timestamp"` could not be loaded at all** — the form this repository's own documentation teaches threw before anything was validated. |
+| 🟠 | **`--direct` no longer skips staging**, and says so. With nothing staged there is nothing for the guard to compare, so an empty source is discovered *after* the destination is emptied. |
+| 🟠 | **Catalog passwords are re-protected with DPAPI.** They were XOR'd against a key that was a literal in the source. A SQL-auth connection created by the CLI had never been runnable; it is now. |
+| 🟢 | **Streaming copy** — one million rows at **0.0 MB** of live heap, against 182.7 MB for the list it replaces, and faster. A table larger than RAM is copyable at last. |
+| 🟢 | **Publication by `SWITCH`** — a reader blocked **31 ms** against 1,137 ms for truncate-and-insert, and the destination keeps its indexes and GRANTs. |
+| 🟢 | **A job lease** replacing the "in progress" flag a crashed run left set for ever. |
+| 🟢 | **245 unit and 122 live tests.** This repository had none. |
 
 ---
 
