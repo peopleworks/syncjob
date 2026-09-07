@@ -19,7 +19,7 @@ jobs:
           dotnet-version: '9.0.x'
 
       - name: Build
-        run: dotnet build SyncJob.csproj -c Release
+        run: dotnet build SyncJob.sln -c Release
 
       # IncludeNativeLibrariesForSelfExtract es OBLIGATORIO aqui, no un adorno.
       # Sin el, PublishSingleFile deja fuera Microsoft.Data.SqlClient.SNI.dll y
@@ -28,7 +28,7 @@ jobs:
       # dos DLL al lado, no conecta.
       - name: Publish self-contained Windows executable
         run: >
-          dotnet publish SyncJob.csproj -c Release -r win-x64
+          dotnet publish src/SyncJob.Cli/SyncJob.Cli.csproj -c Release -r win-x64
           --self-contained true
           -p:PublishSingleFile=true
           -p:EnableCompressionInSingleFile=true
@@ -53,7 +53,7 @@ jobs:
           Pop-Location
 
       - name: Pack the .NET tool
-        run: dotnet pack SyncJob.csproj -c Release -o ./artifacts
+        run: dotnet pack src/SyncJob.Cli/SyncJob.Cli.csproj src/SyncJob.Core/SyncJob.Core.csproj -c Release -o ./artifacts
 
       - name: Zip the executable
         shell: pwsh
@@ -83,7 +83,7 @@ jobs:
             Or install it as a .NET tool:
 
             ```bash
-            dotnet tool install -g PeopleWorks.SyncJob
+            dotnet tool install -g PeopleWorks.SyncJob.Cli
             syncjob --version
             ```
 

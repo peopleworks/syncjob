@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <Version>1.0.0</Version>
+    <Description>The data-movement engine behind SyncJob: streaming copy, staging with a row guard, publication by swap, merge and watermark. Packaged so that CLIs, services and applications share one implementation instead of forking it.</Description>
+    <Authors>Pedro Hernández (PeopleWorks)</Authors>
+    <Company>PeopleWorks</Company>
+    <Copyright>© 2026 PeopleWorks</Copyright>
+    <RepositoryUrl>https://github.com/peopleworks/SyncJob</RepositoryUrl>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageId>PeopleWorks.SyncJob.Core</PackageId>
+    <PackageTags>sql-server;etl;data-sync;bulk-copy;library</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.SqlClient" Version="6.1.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+</Project>

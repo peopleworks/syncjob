@@ -24,13 +24,16 @@ jobs:
           dotnet-version: '9.0.x'
 
       - name: Restore
-        run: dotnet restore SyncJob.csproj
+        run: dotnet restore SyncJob.sln
 
       - name: Build
-        run: dotnet build SyncJob.csproj -c Release --no-restore
+        run: dotnet build SyncJob.sln -c Release --no-restore
+
+      - name: Unit tests
+        run: dotnet test tests/SyncJob.Core.Tests -c Release --no-build --verbosity normal
 
       - name: Pack (verify the tool package builds)
-        run: dotnet pack SyncJob.csproj -c Release -o ./artifacts
+        run: dotnet pack src/SyncJob.Cli/SyncJob.Cli.csproj src/SyncJob.Core/SyncJob.Core.csproj -c Release -o ./artifacts
 
       # Cada comando de la CLI tiene que arrancar sin reventar. Suena obvio y no
       # lo era: `examples` fallaba con "Could not find color or style
@@ -42,7 +45,7 @@ jobs:
           set -e
           for cmd in "--version" "--help" "examples"; do
             echo "--- SyncJob.dll $cmd"
-            dotnet bin/Release/net9.0/SyncJob.dll $cmd > /dev/null
+            dotnet src/SyncJob.Cli/bin/Release/net9.0/SyncJob.dll $cmd > /dev/null
           done
           echo "CLI entry points OK."
 
@@ -71,7 +74,7 @@ jobs:
           dotnet-version: '9.0.x'
 
       - name: Build
-        run: dotnet build SyncJob.csproj -c Release
+        run: dotnet build SyncJob.sln -c Release
 
       # go-sqlcmd es un binario estatico: nada de imagenes de docker cuyo
       # nombre haya que adivinar, ni paquetes que instalar.
@@ -103,6 +106,13 @@ jobs:
           docker ps -a
           docker logs "$(docker ps -aq --filter ancestor=mcr.microsoft.com/mssql/server:2022-latest | head -1)" || true
           exit 1
+
+      # Las pruebas vivas del Core crean y borran sus propias bases SyncJobIT_*,
+      # asi que corren antes del guion de la CLI y no se pisan con el.
+      - name: Live tests (Core)
+        env:
+          SYNCJOB_TEST_CONN: Server=localhost,1433;User Id=sa;Password=${{ env.SA_PASSWORD }};TrustServerCertificate=true;Encrypt=false
+        run: dotnet test tests/SyncJob.IntegrationTests -c Release --no-build --verbosity normal
 
       - name: Create source and destination
         run: |
@@ -154,10 +164,10 @@ jobs:
       # ColumnMappings va deliberadamente ausente: esto comprueba que se
       # deducen del origen.
       - name: Validate (derives the column mappings)
-        run: dotnet bin/Release/net9.0/SyncJob.dll validate -c ci.json -s CustomerSync
+        run: dotnet src/SyncJob.Cli/bin/Release/net9.0/SyncJob.dll validate -c ci.json -s CustomerSync
 
       - name: Run the sync
-        run: dotnet bin/Release/net9.0/SyncJob.dll run -c ci.json -s CustomerSync
+        run: dotnet src/SyncJob.Cli/bin/Release/net9.0/SyncJob.dll run -c ci.json -s CustomerSync
 
       - name: Assert the rows landed
         run: |
@@ -171,7 +181,7 @@ jobs:
       # tiene que dar el mismo resultado.
       - name: Run again — the rename swap has to survive alternating
         run: |
-          dotnet bin/Release/net9.0/SyncJob.dll run -c ci.json -s CustomerSync
+          dotnet src/SyncJob.Cli/bin/Release/net9.0/SyncJob.dll run -c ci.json -s CustomerSync
           COUNT=$($SQLCMD -S localhost,1433 -U sa -P "$SA_PASSWORD" -C -d SyncDst -h -1 -W \
                   -Q "SET NOCOUNT ON; SELECT COUNT(*) FROM dbo.Customer" | tr -d '[:space:]')
           [ "$COUNT" = "500" ] || { echo "::error::After the second run expected 500, got $COUNT"; exit 1; }
@@ -182,7 +192,7 @@ jobs:
         run: |
           sed 's|SELECT Id, Name, Total FROM dbo.Customer|SELECT TOP 5 Id, Name, Total FROM dbo.Customer|' ci.json > broken.json
 
-          if dotnet bin/Release/net9.0/SyncJob.dll run -c broken.json -s CustomerSync; then
+          if dotnet src/SyncJob.Cli/bin/Release/net9.0/SyncJob.dll run -c broken.json -s CustomerSync; then
             echo "::error::The run should have aborted below the threshold, but it succeeded."
             exit 1
           fi
@@ -194,7 +204,7 @@ jobs:
           [ "$COUNT" = "500" ] || { echo "::error::The destination was damaged: $COUNT rows"; exit 1; }
 
       - name: --all walks every section
-        run: dotnet bin/Release/net9.0/SyncJob.dll run -c ci.json --all
+        run: dotnet src/SyncJob.Cli/bin/Release/net9.0/SyncJob.dll run -c ci.json --all
 
   docs:
     name: pocket guide assets

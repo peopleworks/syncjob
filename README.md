@@ -6,7 +6,7 @@
 
 [![CI](https://github.com/peopleworks/syncjob/actions/workflows/ci.yml/badge.svg)](https://github.com/peopleworks/syncjob/actions/workflows/ci.yml)
 [![Latest release](https://img.shields.io/github/v/release/peopleworks/syncjob?label=release&logo=github)](https://github.com/peopleworks/syncjob/releases/latest)
-[![NuGet](https://img.shields.io/nuget/v/PeopleWorks.SyncJob?logo=nuget)](https://www.nuget.org/packages/PeopleWorks.SyncJob)
+[![NuGet](https://img.shields.io/nuget/v/PeopleWorks.SyncJob.Cli?logo=nuget)](https://www.nuget.org/packages/PeopleWorks.SyncJob.Cli)
 [![.NET](https://img.shields.io/badge/.NET-9.0-512BD4?style=flat-square&logo=dotnet&logoColor=white)](https://dotnet.microsoft.com/)
 [![SQL Server](https://img.shields.io/badge/SQL%20Server-2016%2B-CC2927?style=flat-square&logo=microsoftsqlserver&logoColor=white)](https://www.microsoft.com/sql-server)
 [![Windows Service](https://img.shields.io/badge/Windows%20Service-ready-0078D4?style=flat-square&logo=windows&logoColor=white)](#windows-service-mode)
@@ -85,7 +85,7 @@ That distinction drives every design decision here:
 **Or install it as a .NET tool:**
 
 ```bash
-dotnet tool install -g PeopleWorks.SyncJob
+dotnet tool install -g PeopleWorks.SyncJob.Cli
 syncjob --version
 ```
 
@@ -94,7 +94,7 @@ syncjob --version
 ```bash
 git clone https://github.com/peopleworks/syncjob.git
 cd syncjob
-dotnet publish SyncJob.csproj -c Release -r win-x64 --self-contained true   -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o ./publish
+dotnet publish src/SyncJob.Cli/SyncJob.Cli.csproj -c Release -r win-x64 --self-contained true   -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o ./publish
 ```
 
 > `IncludeNativeLibrariesForSelfExtract` is not optional. Without it the single file leaves
