@@ -444,6 +444,7 @@ public sealed class StepRunner
             BatchSize = step.BatchSize,
             CommandTimeoutSeconds = step.CommandTimeoutSeconds,
             KeepIdentity = step.Publication.KeepIdentity,
+            PublishesInto = step.DestinationTable,
             Progress = options.Progress is null ? null : new CopyProgressRelay(options.Progress, step)
         };
 

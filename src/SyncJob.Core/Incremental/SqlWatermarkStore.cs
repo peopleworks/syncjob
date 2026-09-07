@@ -1,4 +1,5 @@
 ﻿using Microsoft.Data.SqlClient;
+using SyncJob.Core.Catalog;
 
 namespace SyncJob.Core.Incremental;
 
@@ -131,5 +132,49 @@ public sealed class SqlWatermarkStore : IWatermarkStore
             // together can both find the table missing and both try to create it; the one
             // that loses has exactly what it wanted anyway.
         }
+
+        await VerifyShapeAsync(connection, cancellationToken).ConfigureAwait(false);
     }
+
+    /// <summary>
+    /// A table that was already there has to be this store's table, and the check is
+    /// worth its round trip because of one specific table.
+    /// <para>
+    /// SyncJob's deployed incremental sync keeps <c>dbo.SyncJobTracking</c>, and its
+    /// documentation tells operators to name exactly that table. Its shape is
+    /// <c>(JobIdentifier, LastSyncTime, LastRowVersion, ...)</c>: one row for a whole
+    /// job, because that engine had no steps. This store keys a step. The
+    /// <c>CREATE</c> above is guarded by <c>OBJECT_ID</c>, so against a deployed
+    /// installation it creates nothing, and the first read then fails with
+    /// <c>Invalid column name 'Value'</c> - which says nothing about what happened or
+    /// what to do about it. Every upgrade of an incremental job would meet that.
+    /// </para>
+    /// </summary>
+    private async Task VerifyShapeAsync(SqlConnection connection, CancellationToken cancellationToken)
+    {
+        var columns = await TableCatalog.ReadAsync(connection, _table, 0, cancellationToken).ConfigureAwait(false);
+        if(columns.Count == 0)
+            return;
+
+        var present = columns.Select(x => x.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var missing = RequiredColumns.Where(x => !present.Contains(x)).ToList();
+        if(missing.Count == 0)
+            return;
+
+        var legacy = present.Contains("JobIdentifier")
+            ? " That is the shape of SyncJob's own dbo.SyncJobTracking, which keyed a whole job by one row " +
+              "because that engine had no steps. It cannot be read as a watermark table and must not be " +
+              "written over: it still holds the history of the runs that came before."
+            : string.Empty;
+
+        throw new InvalidOperationException(
+            $"the watermark table {_table} already exists and is not a watermark table: it has no " +
+            $"{string.Join(" or ", missing.Select(x => $"'{x}'"))} column.{legacy} Point the step's " +
+            "WatermarkPlan.StateTable at a table of its own - leaving it unset uses " +
+            $"{DefaultTable}, which this engine creates and owns.");
+    }
+
+    /// <summary>What a table has to have to be this store's table.</summary>
+    private static readonly string[] RequiredColumns =
+        ["JobId", "StepId", "Value", "PreviousValue", "UpdatedAt"];
 }

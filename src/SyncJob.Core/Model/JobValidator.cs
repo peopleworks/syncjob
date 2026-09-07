@@ -1,4 +1,4 @@
-namespace SyncJob.Core.Model;
+﻿namespace SyncJob.Core.Model;
 
 /// <summary>
 /// Says what is wrong with a job before anything touches a database.
@@ -108,6 +108,20 @@ public static class JobValidator
 
         if(step.BatchSize < 0)
             issues.Add(Error(where, "the batch size is negative"));
+
+        if(step.Publication.MaxDegreeOfParallelism > 1)
+        {
+            // Said out loud rather than honoured or ignored. The engine streams a step's
+            // rows in one pass - which is what lets it copy a table larger than memory -
+            // and there is no second stream for this number to govern. An operator who
+            // typed it is entitled to know it does nothing, because the alternative is
+            // believing a job is four times faster than it is.
+            issues.Add(Warning(
+                where,
+                $"the step asks for {step.Publication.MaxDegreeOfParallelism} parallel copies and the engine " +
+                "copies a step in a single stream, so the setting has no effect. It is kept rather than dropped " +
+                "because a job imported from a format that carries it should not lose what it said."));
+        }
 
         ValidateVariables(step, where, issues);
     }

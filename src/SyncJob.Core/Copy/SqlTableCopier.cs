@@ -88,7 +88,7 @@ public sealed class SqlTableCopier : ITableCopier
             destinationColumns,
             request.ColumnMap,
             request.KeepIdentity,
-            targetTable,
+            Describe(request, targetTable),
             request.ColumnsNotFromSource);
 
         var progress = request.Progress ?? NullProgress.Instance;
@@ -170,6 +170,16 @@ public sealed class SqlTableCopier : ITableCopier
             ? reader
             : new RowBufferingReader(reader, userDefined);
     }
+
+    /// <summary>
+    /// What to call the target in a message: the destination it stands for, with the
+    /// staging table named too so that someone looking at the server can find it.
+    /// </summary>
+    private static string Describe(CopyRequest request, string targetTable) =>
+        string.IsNullOrWhiteSpace(request.PublishesInto) ||
+        string.Equals(request.PublishesInto, targetTable, StringComparison.OrdinalIgnoreCase)
+            ? targetTable
+            : $"{request.PublishesInto} (staged as {targetTable})";
 
     private static SqlCommand CreateSourceCommand(CopyRequest request, SqlConnection connection)
     {

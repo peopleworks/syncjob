@@ -48,6 +48,51 @@ public sealed class WatermarkLiveTests(SqlServerFixture fixture)
         }
     }
 
+    /// <summary>
+    /// The upgrade path every incremental installation is about to walk.
+    /// <para>
+    /// SyncJob's deployed engine keeps <c>dbo.SyncJobTracking</c>, and INCREMENTAL_SYNC.md
+    /// and README.md both tell operators to write exactly that name into their
+    /// configuration. Its shape is one row per job. This store keys a step, and its
+    /// CREATE is guarded by OBJECT_ID - so against a real installation it creates nothing
+    /// and the first read fails with "Invalid column name", which tells the operator
+    /// neither what happened nor what to do.
+    /// </para>
+    /// </summary>
+    [LiveFact]
+    public async Task ATableThatIsNotAWatermarkTableIsRefusedBeforeItIsRead()
+    {
+        var connectionString = await fixture.CreateDatabaseAsync();
+
+        // The deployed table, exactly as IncrementalSync.cs:185 creates it.
+        await SqlServerFixture.ExecuteAsync(connectionString, """
+            CREATE TABLE dbo.SyncJobTracking (
+                JobIdentifier  nvarchar(255) NOT NULL PRIMARY KEY,
+                LastSyncTime   datetime2     NOT NULL CONSTRAINT DF_T_LastSyncTime DEFAULT GETUTCDATE(),
+                LastRowVersion varbinary(8)      NULL,
+                RowsProcessed  bigint        NOT NULL CONSTRAINT DF_T_RowsProcessed DEFAULT 0,
+                Success        bit           NOT NULL CONSTRAINT DF_T_Success DEFAULT 1
+            );
+
+            INSERT INTO dbo.SyncJobTracking (JobIdentifier, RowsProcessed) VALUES (N'nightly', 4200);
+            """);
+
+        var store = new SqlWatermarkStore("dbo.SyncJobTracking");
+
+        var refused = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => store.ReadAsync(connectionString, "nightly", "step", CancellationToken.None));
+
+        // It names the table, what is missing, what the table actually is, and the fix.
+        Assert.Contains("dbo.SyncJobTracking", refused.Message, StringComparison.Ordinal);
+        Assert.Contains("'JobId'", refused.Message, StringComparison.Ordinal);
+        Assert.Contains("keyed a whole job by one row", refused.Message, StringComparison.Ordinal);
+        Assert.Contains(SqlWatermarkStore.DefaultTable, refused.Message, StringComparison.Ordinal);
+
+        // And the history of the runs that came before is still there.
+        Assert.Equal(4200L, Convert.ToInt64(await SqlServerFixture.ScalarAsync(
+            connectionString, "SELECT RowsProcessed FROM dbo.SyncJobTracking WHERE JobIdentifier = N'nightly';")));
+    }
+
     [LiveFact]
     public async Task AStepWithNoWatermarkYetReadsAsNothing()
     {
