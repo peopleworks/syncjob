@@ -2,6 +2,7 @@
 using Microsoft.Data.SqlClient;
 using SqlSchemaDiff.Models;
 using SqlSchemaDiff.Services;
+using SyncJob.Core.Catalog;
 using SyncJob.Core.Model;
 
 namespace SyncJob.Core.Publication;
@@ -62,15 +63,15 @@ public sealed class SwapPublisher : IPublisher
         var destination = SqlObjectName.Parse(step.DestinationTable);
         var timeout = step.CommandTimeoutSeconds;
 
-        await using var connection = await PublicationSql.OpenAsync(connectionString, cancellationToken);
+        await using var connection = await PublicationSql.OpenAsync(connectionString, cancellationToken).ConfigureAwait(false);
 
-        var capability = await SwapCapability.ReadAsync(connection, staging, destination, timeout, cancellationToken);
+        var capability = await SwapCapability.ReadAsync(connection, staging, destination, timeout, cancellationToken).ConfigureAwait(false);
 
         // Both counts are taken before the transaction opens. Taken inside it they
         // would hold the schema-modification lock for the length of two scans, which
         // is the whole failure this publisher exists to avoid.
-        var stagedRows = await PublicationSql.CountAsync(connection, staging, timeout, cancellationToken);
-        var replacedRows = await PublicationSql.CountAsync(connection, destination, timeout, cancellationToken);
+        var stagedRows = await PublicationSql.CountAsync(connection, staging, timeout, cancellationToken).ConfigureAwait(false);
+        var replacedRows = await PublicationSql.CountAsync(connection, destination, timeout, cancellationToken).ConfigureAwait(false);
 
         // The stamp goes on staging, before either path publishes. Every row a replace
         // writes is a new row, so there is nothing to distinguish between updated and
@@ -78,12 +79,12 @@ public sealed class SwapPublisher : IPublisher
         // this the cheap place to do it. The deployed system stamps its own staging
         // copy too, but after the merge has already read from it, so the value never
         // reaches the destination at all.
-        await StampStagingAsync(connection, staging, step.Provenance, timeout, cancellationToken);
+        await StampStagingAsync(connection, staging, step.Provenance, timeout, cancellationToken).ConfigureAwait(false);
 
         if(capability.BlockedBecause is null)
-            await SwapAsync(connectionString, connection, staging, destination, timeout, cancellationToken);
+            await SwapAsync(connectionString, connection, staging, destination, timeout, cancellationToken).ConfigureAwait(false);
         else
-            await ReplaceInPlaceAsync(connection, staging, destination, capability, step, timeout, cancellationToken);
+            await ReplaceInPlaceAsync(connection, staging, destination, capability, step, timeout, cancellationToken).ConfigureAwait(false);
 
         return new PublishResult(stagedRows, 0, replacedRows);
     }
@@ -109,7 +110,7 @@ public sealed class SwapPublisher : IPublisher
         if(stampValue is not null)
             command.Parameters.AddWithValue(AppendMergeSql.StampParameter, stampValue);
 
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private static async Task SwapAsync(
@@ -120,15 +121,15 @@ public sealed class SwapPublisher : IPublisher
         int timeout,
         CancellationToken cancellationToken)
     {
-        var snapshot = await new SqlServerSchemaExtractor().ExtractAsync(connectionString, cancellationToken);
+        var snapshot = await new SqlServerSchemaExtractor().ExtractAsync(connectionString, cancellationToken).ConfigureAwait(false);
         var model = StagingTableFactory.FindTable(snapshot, destination)
                     ?? throw new InvalidOperationException(
                         $"{destination.Quoted} disappeared between the capability check and the swap");
 
         foreach(var statement in SwapAlignment.Statements(model, staging))
-            await PublicationSql.ExecuteAsync(connection, null, statement, timeout, cancellationToken);
+            await PublicationSql.ExecuteAsync(connection, null, statement, timeout, cancellationToken).ConfigureAwait(false);
 
-        var reseed = await ReadReseedAsync(connection, staging, model, timeout, cancellationToken);
+        var reseed = await ReadReseedAsync(connection, staging, model, timeout, cancellationToken).ConfigureAwait(false);
 
         // Where the destination's rows go. Switching them out is a metadata operation
         // and a truncate is not; more to the point, a truncate here is a statement the
@@ -139,23 +140,23 @@ public sealed class SwapPublisher : IPublisher
             null,
             SqlRender.BuildTableCreateOnly(StagingTableFactory.AsStaging(model, discard)),
             timeout,
-            cancellationToken);
+            cancellationToken).ConfigureAwait(false);
 
         // Everything from here is inside the try, so that the discard is taken away
         // whether the alignment, the switches or the commit is what went wrong.
         try
         {
             foreach(var statement in SwapAlignment.Statements(model, discard))
-                await PublicationSql.ExecuteAsync(connection, null, statement, timeout, cancellationToken);
+                await PublicationSql.ExecuteAsync(connection, null, statement, timeout, cancellationToken).ConfigureAwait(false);
 
-            await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(cancellationToken);
+            await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
 
             await PublicationSql.ExecuteAsync(
                 connection, transaction,
-                $"ALTER TABLE {destination.Quoted} SWITCH TO {discard.Quoted};", timeout, cancellationToken);
+                $"ALTER TABLE {destination.Quoted} SWITCH TO {discard.Quoted};", timeout, cancellationToken).ConfigureAwait(false);
             await PublicationSql.ExecuteAsync(
                 connection, transaction,
-                $"ALTER TABLE {staging.Quoted} SWITCH TO {destination.Quoted};", timeout, cancellationToken);
+                $"ALTER TABLE {staging.Quoted} SWITCH TO {destination.Quoted};", timeout, cancellationToken).ConfigureAwait(false);
 
             // A switch leaves the destination's identity counter at its seed, so the
             // next row inserted by anything else would collide with the rows just
@@ -167,10 +168,10 @@ public sealed class SwapPublisher : IPublisher
                 await PublicationSql.ExecuteAsync(
                     connection, transaction,
                     $"DBCC CHECKIDENT('{destination.Literal}', RESEED, {reseed}) WITH NO_INFOMSGS;",
-                    timeout, cancellationToken);
+                    timeout, cancellationToken).ConfigureAwait(false);
             }
 
-            await transaction.CommitAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -180,7 +181,7 @@ public sealed class SwapPublisher : IPublisher
             try
             {
                 await PublicationSql.ExecuteAsync(
-                    connection, null, $"DROP TABLE IF EXISTS {discard.Quoted};", timeout, CancellationToken.None);
+                    connection, null, $"DROP TABLE IF EXISTS {discard.Quoted};", timeout, CancellationToken.None).ConfigureAwait(false);
             }
             catch(SqlException)
             {
@@ -207,7 +208,7 @@ public sealed class SwapPublisher : IPublisher
         int timeout,
         CancellationToken cancellationToken)
     {
-        var columns = await ReadSharedColumnsAsync(connection, staging, destination, timeout, cancellationToken);
+        var columns = await ReadSharedColumnsAsync(connection, staging, destination, timeout, cancellationToken).ConfigureAwait(false);
 
         // IDENTITY_INSERT names a table; through a view it would have to name the base
         // table underneath, which is a resolution this publisher does not do. So an
@@ -226,7 +227,7 @@ public sealed class SwapPublisher : IPublisher
         var columnList = string.Join(", ", columns.Select(x => x.Quoted));
         var identityInsert = keepIdentity && columns.Any(x => x.IsIdentity);
 
-        await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(cancellationToken);
+        await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
 
         // TRUNCATE is refused on a table another table's foreign key points at, and on
         // a view there is nothing to truncate.
@@ -234,26 +235,26 @@ public sealed class SwapPublisher : IPublisher
             ? $"TRUNCATE TABLE {destination.Quoted};"
             : $"DELETE FROM {destination.Quoted};";
 
-        await PublicationSql.ExecuteAsync(connection, transaction, empty, timeout, cancellationToken);
+        await PublicationSql.ExecuteAsync(connection, transaction, empty, timeout, cancellationToken).ConfigureAwait(false);
 
         if(identityInsert)
         {
             await PublicationSql.ExecuteAsync(
-                connection, transaction, $"SET IDENTITY_INSERT {destination.Quoted} ON;", timeout, cancellationToken);
+                connection, transaction, $"SET IDENTITY_INSERT {destination.Quoted} ON;", timeout, cancellationToken).ConfigureAwait(false);
         }
 
         await PublicationSql.ExecuteAsync(
             connection, transaction,
             $"INSERT INTO {destination.Quoted} ({columnList}) SELECT {columnList} FROM {staging.Quoted};",
-            timeout, cancellationToken);
+            timeout, cancellationToken).ConfigureAwait(false);
 
         if(identityInsert)
         {
             await PublicationSql.ExecuteAsync(
-                connection, transaction, $"SET IDENTITY_INSERT {destination.Quoted} OFF;", timeout, cancellationToken);
+                connection, transaction, $"SET IDENTITY_INSERT {destination.Quoted} OFF;", timeout, cancellationToken).ConfigureAwait(false);
         }
 
-        await transaction.CommitAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -276,7 +277,7 @@ public sealed class SwapPublisher : IPublisher
         var value = await PublicationSql.ScalarAsync(
             connection, null,
             $"SELECT CONVERT(nvarchar(64), MAX({column})) FROM {staging.Quoted};",
-            timeout, cancellationToken);
+            timeout, cancellationToken).ConfigureAwait(false);
 
         // Nothing staged, so the seed the switch leaves behind is the right one.
         var text = value as string;
@@ -288,6 +289,15 @@ public sealed class SwapPublisher : IPublisher
         return text.All(c => char.IsAsciiDigit(c) || c is '-' or '.') ? text : null;
     }
 
+    /// <summary>
+    /// The columns the two tables have in common and that may be written, in the
+    /// destination's own order.
+    /// <para>
+    /// Both catalogs in one round trip, and the intersection taken here rather than by
+    /// an <c>EXISTS</c> in the query, so that this publisher asks the catalog the same
+    /// question in the same words as the copy engine and the merge publisher do.
+    /// </para>
+    /// </summary>
     private static async Task<List<InsertColumn>> ReadSharedColumnsAsync(
         SqlConnection connection,
         SqlObjectName staging,
@@ -295,28 +305,21 @@ public sealed class SwapPublisher : IPublisher
         int timeout,
         CancellationToken cancellationToken)
     {
-        const string sql = """
-            SELECT c.name, c.is_identity
-            FROM sys.columns c
-            WHERE c.object_id = OBJECT_ID(@destination)
-              AND c.is_computed = 0
-              AND TYPE_NAME(c.system_type_id) <> 'timestamp'
-              AND EXISTS (
-                  SELECT 1 FROM sys.columns s
-                  WHERE s.object_id = OBJECT_ID(@staging) AND s.name = c.name AND s.is_computed = 0)
-            ORDER BY c.column_id;
-            """;
+        var (destinationColumns, stagingColumns) = await TableCatalog.ReadPairAsync(
+            connection, destination.Quoted, staging.Quoted, timeout, cancellationToken).ConfigureAwait(false);
 
-        await using var command = new SqlCommand(sql, connection) { CommandTimeout = timeout };
-        command.Parameters.AddWithValue("@destination", destination.Quoted);
-        command.Parameters.AddWithValue("@staging", staging.Quoted);
+        var inStaging = stagingColumns
+            .Where(x => !x.IsComputed)
+            .Select(x => x.Name)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-        var columns = new List<InsertColumn>();
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        while(await reader.ReadAsync(cancellationToken))
-            columns.Add(new InsertColumn(reader.GetString(0), reader.GetBoolean(1)));
-
-        return columns;
+        // A computed column has no value to carry and a rowversion is stamped by the
+        // server on the way in, so naming either in the INSERT is an error rather than
+        // a preference.
+        return destinationColumns
+            .Where(x => !x.IsComputed && !x.IsRowVersion && inStaging.Contains(x.Name))
+            .Select(x => new InsertColumn(x.Name, x.IsIdentity))
+            .ToList();
     }
 
     private static SqlObjectName Discard(SqlObjectName destination)
@@ -378,8 +381,8 @@ internal sealed record SwapCapability(bool IsTable, bool ReferencedByForeignKey,
         command.Parameters.AddWithValue("@destination", destination.Quoted);
         command.Parameters.AddWithValue("@staging", staging.Quoted);
 
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        if(!await reader.ReadAsync(cancellationToken))
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        if(!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
             throw new InvalidOperationException(
                 $"the destination {destination.Quoted} does not exist; a replace has nothing to replace");

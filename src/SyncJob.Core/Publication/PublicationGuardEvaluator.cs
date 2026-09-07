@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using SyncJob.Core.Model;
 
 namespace SyncJob.Core.Publication;
@@ -38,14 +38,14 @@ public sealed class PublicationGuardEvaluator : IPublicationGuard
         var staging = SqlObjectName.Parse(stagingTable);
         var destination = SqlObjectName.Parse(destinationTable);
 
-        await using var connection = await PublicationSql.OpenAsync(connectionString, cancellationToken);
+        await using var connection = await PublicationSql.OpenAsync(connectionString, cancellationToken).ConfigureAwait(false);
 
-        var stagedRows = await PublicationSql.CountAsync(connection, staging, CommandTimeoutSeconds, cancellationToken);
+        var stagedRows = await PublicationSql.CountAsync(connection, staging, CommandTimeoutSeconds, cancellationToken).ConfigureAwait(false);
 
         var destinationRows = await PublicationSql.ObjectIdAsync(
-            connection, destination, CommandTimeoutSeconds, cancellationToken) is null
+            connection, destination, CommandTimeoutSeconds, cancellationToken).ConfigureAwait(false) is null
             ? DestinationAbsent
-            : await PublicationSql.CountAsync(connection, destination, CommandTimeoutSeconds, cancellationToken);
+            : await PublicationSql.CountAsync(connection, destination, CommandTimeoutSeconds, cancellationToken).ConfigureAwait(false);
 
         return Decide(stagedRows, destinationRows, guard);
     }

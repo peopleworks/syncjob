@@ -1,25 +1,6 @@
-namespace SyncJob.Core.Copy;
+using SyncJob.Core.Catalog;
 
-/// <summary>
-/// A destination column as the destination's own catalog describes it, in
-/// <c>column_id</c> order.
-/// </summary>
-/// <param name="Name">The column's name, spelled as the destination spells it.</param>
-/// <param name="IsComputed">
-/// True for a column the server calculates. It cannot be written at all - a bulk copy
-/// that maps anything to one is refused by the server - so it takes no part in the
-/// match in either direction.
-/// </param>
-/// <param name="IsIdentity">
-/// True for a column the destination can generate for itself. Whether it still needs a
-/// source column depends on <c>KeepIdentity</c>: see <see cref="ColumnMatcher.Match"/>.
-/// </param>
-/// <param name="IsRowVersion">
-/// True for a <c>rowversion</c>. The destination stamps its own on every row it writes
-/// and there is no way to ask it not to, so a source column aimed at one would be read,
-/// carried across the wire and then thrown away by the server without a word.
-/// </param>
-public sealed record DestinationColumn(string Name, bool IsComputed, bool IsIdentity, bool IsRowVersion = false);
+namespace SyncJob.Core.Copy;
 
 /// <summary>
 /// One source column and the destination column its values are written to, with the
@@ -69,7 +50,7 @@ public static class ColumnMatcher
     /// <exception cref="ColumnMatchException">The two sides do not line up.</exception>
     public static IReadOnlyList<ColumnMatch> Match(
         IReadOnlyList<string> sourceColumns,
-        IReadOnlyList<DestinationColumn> destinationColumns,
+        IReadOnlyList<CatalogColumn> destinationColumns,
         IReadOnlyDictionary<string, string> columnMap,
         bool keepIdentity,
         string destinationTable)
@@ -86,7 +67,7 @@ public static class ColumnMatcher
         // destination's own spelling is the safe direction: it accepts a job whose SQL
         // says "customerid" against a column called "CustomerId", and it never invents
         // a name the destination does not have.
-        var destinationByName = new Dictionary<string, DestinationColumn>(StringComparer.OrdinalIgnoreCase);
+        var destinationByName = new Dictionary<string, CatalogColumn>(StringComparer.OrdinalIgnoreCase);
         foreach(var column in destinationColumns)
             destinationByName[column.Name] = column;
 

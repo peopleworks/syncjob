@@ -1,4 +1,4 @@
-using Microsoft.Data.SqlClient;
+﻿using Microsoft.Data.SqlClient;
 using SyncJob.Core.Model;
 
 namespace SyncJob.Core.Publication;
@@ -32,16 +32,16 @@ public sealed class MergePublisher : IPublisher
             throw new ArgumentException($"this publisher merges, and the step '{step.Name}' is configured to {step.Publication.Mode}", nameof(step));
 
         await using var connection = new SqlConnection(connectionString);
-        await connection.OpenAsync(cancellationToken);
+        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
 
-        var columns = await AppendMergeColumns.ResolveAsync(connection, stagingTable, step, requireUniqueKey: true, cancellationToken);
+        var columns = await AppendMergeColumns.ResolveAsync(connection, stagingTable, step, requireUniqueKey: true, cancellationToken).ConfigureAwait(false);
         var (stamp, stampValue) = AppendMergeSql.Stamp(step.Provenance);
 
         var sql = AppendMergeSql.Merge(stagingTable, step.DestinationTable, columns.Columns, columns.KeyColumns, stamp);
         var batchSize = AppendMergeSql.ResolveBatchSize(step.BatchSize);
-        var staged = await CountStagedAsync(connection, stagingTable, step, cancellationToken);
+        var staged = await CountStagedAsync(connection, stagingTable, step, cancellationToken).ConfigureAwait(false);
 
-        await AppendMergeColumns.SetIdentityInsertAsync(connection, step, columns.NeedsIdentityInsert, on: true, cancellationToken);
+        await AppendMergeColumns.SetIdentityInsertAsync(connection, step, columns.NeedsIdentityInsert, on: true, cancellationToken).ConfigureAwait(false);
 
         long inserted = 0;
         long updated = 0;
@@ -68,8 +68,8 @@ public sealed class MergePublisher : IPublisher
                 // row the merge actually changed, so nothing is buffered anywhere and a
                 // matched row that did not differ produces nothing at all - which is what
                 // makes the counts this returns worth reading.
-                await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-                while(await reader.ReadAsync(cancellationToken))
+                await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+                while(await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                 {
                     if(string.Equals(reader.GetString(0), "INSERT", StringComparison.Ordinal))
                         inserted++;
@@ -82,7 +82,7 @@ public sealed class MergePublisher : IPublisher
         {
             // CancellationToken.None: a cancelled run still has to put the session back
             // the way it found it, and the connection is about to be returned to a pool.
-            await AppendMergeColumns.SetIdentityInsertAsync(connection, step, columns.NeedsIdentityInsert, on: false, CancellationToken.None);
+            await AppendMergeColumns.SetIdentityInsertAsync(connection, step, columns.NeedsIdentityInsert, on: false, CancellationToken.None).ConfigureAwait(false);
         }
 
         // Never anything but zero. A merge does not delete: see the class remarks, and
@@ -101,6 +101,6 @@ public sealed class MergePublisher : IPublisher
             CommandTimeout = step.CommandTimeoutSeconds
         };
 
-        return (long)(await command.ExecuteScalarAsync(cancellationToken))!;
+        return (long)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))!;
     }
 }

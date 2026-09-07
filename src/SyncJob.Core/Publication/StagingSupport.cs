@@ -1,4 +1,4 @@
-using System.Text;
+﻿using System.Text;
 using Microsoft.Data.SqlClient;
 
 namespace SyncJob.Core.Publication;
@@ -110,12 +110,12 @@ internal static class PublicationSql
         var connection = new SqlConnection(connectionString);
         try
         {
-            await connection.OpenAsync(cancellationToken);
+            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
             return connection;
         }
         catch
         {
-            await connection.DisposeAsync();
+            await connection.DisposeAsync().ConfigureAwait(false);
             throw;
         }
     }
@@ -128,7 +128,7 @@ internal static class PublicationSql
         CancellationToken cancellationToken)
     {
         await using var command = Command(connection, transaction, sql, commandTimeoutSeconds);
-        return await command.ExecuteNonQueryAsync(cancellationToken);
+        return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
     public static async Task<object?> ScalarAsync(
@@ -143,7 +143,7 @@ internal static class PublicationSql
         foreach(var (name, value) in parameters)
             command.Parameters.AddWithValue(name, value ?? DBNull.Value);
 
-        var result = await command.ExecuteScalarAsync(cancellationToken);
+        var result = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
         return result is DBNull ? null : result;
     }
 
@@ -160,7 +160,7 @@ internal static class PublicationSql
     {
         var id = await ScalarAsync(
             connection, null, "SELECT OBJECT_ID(@name);", commandTimeoutSeconds, cancellationToken,
-            ("@name", name.Quoted));
+            ("@name", name.Quoted)).ConfigureAwait(false);
 
         return id is null ? null : Convert.ToInt32(id, System.Globalization.CultureInfo.InvariantCulture);
     }
@@ -178,7 +178,7 @@ internal static class PublicationSql
         CancellationToken cancellationToken)
     {
         var count = await ScalarAsync(
-            connection, null, $"SELECT COUNT_BIG(*) FROM {table.Quoted};", commandTimeoutSeconds, cancellationToken);
+            connection, null, $"SELECT COUNT_BIG(*) FROM {table.Quoted};", commandTimeoutSeconds, cancellationToken).ConfigureAwait(false);
 
         return Convert.ToInt64(count, System.Globalization.CultureInfo.InvariantCulture);
     }

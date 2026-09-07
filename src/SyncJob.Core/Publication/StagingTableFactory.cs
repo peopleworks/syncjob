@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 using System.Text.RegularExpressions;
 using SqlSchemaDiff.Models;
 using SqlSchemaDiff.Services;
@@ -51,20 +51,20 @@ public sealed partial class StagingTableFactory : IStagingTableFactory
             ? GenerateName(destination)
             : SqlObjectName.Parse(requestedName!, destination.Schema);
 
-        await using var connection = await PublicationSql.OpenAsync(connectionString, cancellationToken);
+        await using var connection = await PublicationSql.OpenAsync(connectionString, cancellationToken).ConfigureAwait(false);
 
-        if(await PublicationSql.ObjectIdAsync(connection, destination, CommandTimeoutSeconds, cancellationToken) is null)
+        if(await PublicationSql.ObjectIdAsync(connection, destination, CommandTimeoutSeconds, cancellationToken).ConfigureAwait(false) is null)
         {
             throw new InvalidOperationException(
                 $"the destination {destination.Quoted} does not exist, and the staging table takes its shape " +
                 "from it - so there is nothing to stage into");
         }
 
-        var createSql = await BuildCreateAsync(connectionString, destination, staging, cancellationToken);
+        var createSql = await BuildCreateAsync(connectionString, destination, staging, cancellationToken).ConfigureAwait(false);
 
         await PublicationSql.ExecuteAsync(
-            connection, null, $"DROP TABLE IF EXISTS {staging.Quoted};", CommandTimeoutSeconds, cancellationToken);
-        await PublicationSql.ExecuteAsync(connection, null, createSql, CommandTimeoutSeconds, cancellationToken);
+            connection, null, $"DROP TABLE IF EXISTS {staging.Quoted};", CommandTimeoutSeconds, cancellationToken).ConfigureAwait(false);
+        await PublicationSql.ExecuteAsync(connection, null, createSql, CommandTimeoutSeconds, cancellationToken).ConfigureAwait(false);
 
         if(generated)
             _generated.TryAdd(staging.Quoted, 0);
@@ -91,9 +91,9 @@ public sealed partial class StagingTableFactory : IStagingTableFactory
         if(!wasGenerated)
             return;
 
-        await using var connection = await PublicationSql.OpenAsync(connectionString, cancellationToken);
+        await using var connection = await PublicationSql.OpenAsync(connectionString, cancellationToken).ConfigureAwait(false);
         await PublicationSql.ExecuteAsync(
-            connection, null, $"DROP TABLE IF EXISTS {staging.Quoted};", CommandTimeoutSeconds, cancellationToken);
+            connection, null, $"DROP TABLE IF EXISTS {staging.Quoted};", CommandTimeoutSeconds, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -111,7 +111,7 @@ public sealed partial class StagingTableFactory : IStagingTableFactory
         SqlObjectName staging,
         CancellationToken cancellationToken)
     {
-        var snapshot = await new SqlServerSchemaExtractor().ExtractAsync(connectionString, cancellationToken);
+        var snapshot = await new SqlServerSchemaExtractor().ExtractAsync(connectionString, cancellationToken).ConfigureAwait(false);
         var model = FindTable(snapshot, destination);
 
         // A destination that is not a table - a view over one, which this engine is

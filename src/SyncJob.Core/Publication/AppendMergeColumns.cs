@@ -1,4 +1,5 @@
-using Microsoft.Data.SqlClient;
+﻿using Microsoft.Data.SqlClient;
+using SyncJob.Core.Catalog;
 using SyncJob.Core.Model;
 
 namespace SyncJob.Core.Publication;
@@ -50,11 +51,16 @@ internal static class AppendMergeColumns
     {
         var destinationTable = step.DestinationTable;
 
-        var destination = await ReadCatalogAsync(connection, destinationTable, step, cancellationToken);
+        // Both shapes from one round trip, so they describe the same instant: the
+        // whole point of the comparison below is that the two tables agree, and reading
+        // them separately would let a schema change land between the two reads and be
+        // compared against a table as it no longer is.
+        var (destination, staging) = await TableCatalog.ReadPairAsync(
+            connection, destinationTable, stagingTable, step.CommandTimeoutSeconds, cancellationToken).ConfigureAwait(false);
+
         if(destination.Count == 0)
             throw new InvalidOperationException($"the destination table {destinationTable} has no columns, or is not there");
 
-        var staging = await ReadCatalogAsync(connection, stagingTable, step, cancellationToken);
         if(staging.Count == 0)
             throw new InvalidOperationException($"the staging table {stagingTable} has no columns, or is not there");
 
@@ -180,45 +186,9 @@ internal static class AppendMergeColumns
 
         var sql = $"SET IDENTITY_INSERT {step.DestinationTable} {(on ? "ON" : "OFF")};";
         await using var command = new SqlCommand(sql, connection) { CommandTimeout = step.CommandTimeoutSeconds };
-        await command.ExecuteNonQueryAsync(cancellationToken);
-    }
-
-    private static async Task<List<CatalogColumn>> ReadCatalogAsync(
-        SqlConnection connection,
-        string table,
-        SyncStep step,
-        CancellationToken cancellationToken)
-    {
-        const string sql = """
-            SELECT c.name, c.is_identity, c.is_computed, t.name AS type_name
-            FROM sys.columns AS c
-            INNER JOIN sys.types AS t ON t.user_type_id = c.user_type_id
-            WHERE c.object_id = OBJECT_ID(@table)
-            ORDER BY c.column_id;
-            """;
-
-        await using var command = new SqlCommand(sql, connection) { CommandTimeout = step.CommandTimeoutSeconds };
-        command.Parameters.AddWithValue("@table", table);
-
-        var columns = new List<CatalogColumn>();
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        while(await reader.ReadAsync(cancellationToken))
-        {
-            columns.Add(new CatalogColumn(
-                reader.GetString(0),
-                reader.GetBoolean(1),
-                reader.GetBoolean(2),
-
-                // A rowversion column still reports its type as "timestamp", the name it
-                // had before the standard took that word for something else.
-                string.Equals(reader.GetString(3), "timestamp", StringComparison.OrdinalIgnoreCase)));
-        }
-
-        return columns;
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private static string Describe(SyncStep step) =>
         step.Name is { Length: > 0 } ? step.Name : step.Id;
-
-    private sealed record CatalogColumn(string Name, bool IsIdentity, bool IsComputed, bool IsRowVersion);
 }

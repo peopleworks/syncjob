@@ -1,7 +1,8 @@
-using System.Data;
+﻿using System.Data;
 using System.Data.Common;
 using System.Diagnostics;
 using Microsoft.Data.SqlClient;
+using SyncJob.Core.Catalog;
 
 namespace SyncJob.Core.Copy;
 
@@ -39,10 +40,15 @@ public sealed class SqlTableCopier : ITableCopier
         // The catalog read and the bulk copy share one connection to the destination:
         // the shape that is checked is then the shape that is written to.
         await using var destination = new SqlConnection(request.DestinationConnectionString);
-        await destination.OpenAsync(cancellationToken);
+        await destination.OpenAsync(cancellationToken).ConfigureAwait(false);
 
-        var destinationColumns = await ReadDestinationColumnsAsync(
-            destination, targetTable, request.CommandTimeoutSeconds, cancellationToken);
+        // From the catalog rather than from anything the job carries: a column list
+        // written down in a configuration drifts from the table it describes, and the
+        // copy that trusts it is the one that writes the rows in shifted. The read and
+        // the bulk copy share this connection, so the shape that is checked is the
+        // shape that is written to.
+        var destinationColumns = await TableCatalog.ReadAsync(
+            destination, targetTable, request.CommandTimeoutSeconds, cancellationToken).ConfigureAwait(false);
 
         if(destinationColumns.Count == 0)
         {
@@ -52,14 +58,14 @@ public sealed class SqlTableCopier : ITableCopier
         }
 
         await using var source = new SqlConnection(request.SourceConnectionString);
-        await source.OpenAsync(cancellationToken);
+        await source.OpenAsync(cancellationToken).ConfigureAwait(false);
 
         await using var command = CreateSourceCommand(request, source);
 
         // SequentialAccess is what lets a varbinary(max) travel without being assembled
         // in memory first; the reader hands the driver the bytes as they arrive.
         await using var reader = await command.ExecuteReaderAsync(
-            CommandBehavior.SequentialAccess, cancellationToken);
+            CommandBehavior.SequentialAccess, cancellationToken).ConfigureAwait(false);
 
         if(reader.FieldCount == 0)
         {
@@ -68,7 +74,7 @@ public sealed class SqlTableCopier : ITableCopier
                 (request.IsStoredProcedure ? ": a procedure that only returns a count has no rows to give" : string.Empty));
         }
 
-        var schema = await reader.GetColumnSchemaAsync(cancellationToken);
+        var schema = await reader.GetColumnSchemaAsync(cancellationToken).ConfigureAwait(false);
         var sourceColumns = schema.Select(x => x.ColumnName ?? string.Empty).ToList();
 
         // A user-defined type - geography, geometry, hierarchyid - is the one kind of
@@ -107,7 +113,7 @@ public sealed class SqlTableCopier : ITableCopier
 
         try
         {
-            await bulk.WriteToServerAsync(rowSource, cancellationToken);
+            await bulk.WriteToServerAsync(rowSource, cancellationToken).ConfigureAwait(false);
         }
         catch(Exception exception) when(cancellationToken.IsCancellationRequested)
         {
@@ -175,47 +181,6 @@ public sealed class SqlTableCopier : ITableCopier
             command.Parameters.AddWithValue(name.StartsWith('@') ? name : "@" + name, value ?? DBNull.Value);
 
         return command;
-    }
-
-    /// <summary>
-    /// The destination's columns as the destination itself describes them, in
-    /// <c>column_id</c> order.
-    /// <para>
-    /// From the catalog rather than from anything the job carries: a column list written
-    /// down in a configuration drifts from the table it describes, and the copy that
-    /// trusts it is the one that writes the rows in shifted.
-    /// </para>
-    /// </summary>
-    private static async Task<IReadOnlyList<DestinationColumn>> ReadDestinationColumnsAsync(
-        SqlConnection connection,
-        string targetTable,
-        int commandTimeoutSeconds,
-        CancellationToken cancellationToken)
-    {
-        const string sql = """
-            SELECT c.name, c.is_computed, c.is_identity, CASE WHEN t.name = 'timestamp' THEN 1 ELSE 0 END
-            FROM sys.columns AS c
-            JOIN sys.types AS t ON t.user_type_id = c.user_type_id
-            WHERE c.object_id = OBJECT_ID(@table)
-            ORDER BY c.column_id;
-            """;
-
-        await using var command = new SqlCommand(sql, connection) { CommandTimeout = commandTimeoutSeconds };
-        command.Parameters.Add("@table", SqlDbType.NVarChar, 776).Value = targetTable;
-
-        var columns = new List<DestinationColumn>();
-
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        while(await reader.ReadAsync(cancellationToken))
-        {
-            columns.Add(new DestinationColumn(
-                reader.GetString(0),
-                reader.GetBoolean(1),
-                reader.GetBoolean(2),
-                reader.GetInt32(3) == 1));
-        }
-
-        return columns;
     }
 
     /// <summary>

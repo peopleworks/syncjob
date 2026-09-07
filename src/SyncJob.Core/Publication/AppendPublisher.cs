@@ -1,4 +1,4 @@
-using Microsoft.Data.SqlClient;
+﻿using Microsoft.Data.SqlClient;
 using SyncJob.Core.Model;
 
 namespace SyncJob.Core.Publication;
@@ -30,14 +30,14 @@ public sealed class AppendPublisher : IPublisher
             throw new ArgumentException($"this publisher appends, and the step '{step.Name}' is configured to {step.Publication.Mode}", nameof(step));
 
         await using var connection = new SqlConnection(connectionString);
-        await connection.OpenAsync(cancellationToken);
+        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
 
-        var columns = await AppendMergeColumns.ResolveAsync(connection, stagingTable, step, requireUniqueKey: false, cancellationToken);
+        var columns = await AppendMergeColumns.ResolveAsync(connection, stagingTable, step, requireUniqueKey: false, cancellationToken).ConfigureAwait(false);
         var (stamp, stampValue) = AppendMergeSql.Stamp(step.Provenance);
 
         var sql = AppendMergeSql.Append(stagingTable, step.DestinationTable, columns.Columns, stamp);
 
-        await AppendMergeColumns.SetIdentityInsertAsync(connection, step, columns.NeedsIdentityInsert, on: true, cancellationToken);
+        await AppendMergeColumns.SetIdentityInsertAsync(connection, step, columns.NeedsIdentityInsert, on: true, cancellationToken).ConfigureAwait(false);
 
         try
         {
@@ -45,7 +45,7 @@ public sealed class AppendPublisher : IPublisher
             if(stampValue is not null)
                 command.Parameters.AddWithValue(AppendMergeSql.StampParameter, stampValue);
 
-            var inserted = await command.ExecuteNonQueryAsync(cancellationToken);
+            var inserted = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
             // Nothing is updated and nothing is deleted, by definition: that is what makes
             // this the mode it is safe to point at a table something else also writes to.
@@ -55,7 +55,7 @@ public sealed class AppendPublisher : IPublisher
         {
             // CancellationToken.None: a cancelled run still has to put the session back
             // the way it found it, and the connection is about to be returned to a pool.
-            await AppendMergeColumns.SetIdentityInsertAsync(connection, step, columns.NeedsIdentityInsert, on: false, CancellationToken.None);
+            await AppendMergeColumns.SetIdentityInsertAsync(connection, step, columns.NeedsIdentityInsert, on: false, CancellationToken.None).ConfigureAwait(false);
         }
     }
 }

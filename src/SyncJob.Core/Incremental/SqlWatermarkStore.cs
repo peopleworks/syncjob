@@ -1,4 +1,4 @@
-using Microsoft.Data.SqlClient;
+﻿using Microsoft.Data.SqlClient;
 
 namespace SyncJob.Core.Incremental;
 
@@ -38,8 +38,8 @@ public sealed class SqlWatermarkStore : IWatermarkStore
         CancellationToken cancellationToken)
     {
         await using var connection = new SqlConnection(connectionString);
-        await connection.OpenAsync(cancellationToken);
-        await EnsureTableAsync(connection, cancellationToken);
+        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        await EnsureTableAsync(connection, cancellationToken).ConfigureAwait(false);
 
         // One statement, so the value and the previous value are the ones that were there
         // together. Two reads could land either side of a write and report a pair that
@@ -50,13 +50,13 @@ public sealed class SqlWatermarkStore : IWatermarkStore
         command.Parameters.AddWithValue("@job", jobId);
         command.Parameters.AddWithValue("@step", stepId);
 
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        if(!await reader.ReadAsync(cancellationToken))
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        if(!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             return null;
 
         return new Watermark(
             reader.GetString(0),
-            await reader.IsDBNullAsync(1, cancellationToken) ? null : reader.GetString(1),
+            await reader.IsDBNullAsync(1, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(1),
             reader.GetDateTimeOffset(2));
     }
 
@@ -68,8 +68,8 @@ public sealed class SqlWatermarkStore : IWatermarkStore
         CancellationToken cancellationToken)
     {
         await using var connection = new SqlConnection(connectionString);
-        await connection.OpenAsync(cancellationToken);
-        await EnsureTableAsync(connection, cancellationToken);
+        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        await EnsureTableAsync(connection, cancellationToken).ConfigureAwait(false);
 
         // One statement, and the shift happens inside it: in an UPDATE every right-hand
         // side is evaluated against the row as it was, so [PreviousValue] = [Value] takes
@@ -98,7 +98,7 @@ public sealed class SqlWatermarkStore : IWatermarkStore
         command.Parameters.AddWithValue("@step", stepId);
         command.Parameters.AddWithValue("@value", value);
 
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -123,7 +123,7 @@ public sealed class SqlWatermarkStore : IWatermarkStore
         try
         {
             await using var command = new SqlCommand(sql, connection);
-            await command.ExecuteNonQueryAsync(cancellationToken);
+            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
         catch(SqlException e) when(e.Number == 2714)
         {

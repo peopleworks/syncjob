@@ -1,3 +1,4 @@
+using SyncJob.Core.Catalog;
 using SyncJob.Core.Copy;
 
 namespace SyncJob.Core.Tests;
@@ -19,11 +20,11 @@ public sealed class CopyRequestTests
 {
     private static readonly Dictionary<string, string> NoMap = new();
 
-    private static DestinationColumn Plain(string name) => new(name, IsComputed: false, IsIdentity: false);
+    private static CatalogColumn Plain(string name) => new(name, IsComputed: false, IsIdentity: false);
 
     private static IReadOnlyList<ColumnMatch> Match(
         string[] source,
-        DestinationColumn[] destination,
+        CatalogColumn[] destination,
         Dictionary<string, string>? map = null,
         bool keepIdentity = true) =>
         ColumnMatcher.Match(source, destination, map ?? NoMap, keepIdentity, "dbo.Customer");
@@ -183,7 +184,7 @@ public sealed class CopyRequestTests
     {
         var matches = Match(
             ["Price", "Quantity"],
-            [Plain("Price"), Plain("Quantity"), new DestinationColumn("Total", IsComputed: true, IsIdentity: false)]);
+            [Plain("Price"), Plain("Quantity"), new CatalogColumn("Total", IsComputed: true, IsIdentity: false)]);
 
         Assert.Equal(["Price", "Quantity"], matches.Select(x => x.DestinationColumn));
     }
@@ -193,7 +194,7 @@ public sealed class CopyRequestTests
     {
         var error = Assert.Throws<ColumnMatchException>(() => Match(
             ["Price", "Quantity", "Total"],
-            [Plain("Price"), Plain("Quantity"), new DestinationColumn("Total", IsComputed: true, IsIdentity: false)]));
+            [Plain("Price"), Plain("Quantity"), new CatalogColumn("Total", IsComputed: true, IsIdentity: false)]));
 
         Assert.Contains(error.Problems, x => x.Contains("'Total'", StringComparison.Ordinal));
     }
@@ -206,7 +207,7 @@ public sealed class CopyRequestTests
     [Fact]
     public void AnIdentityColumnWithNoSourceColumn_IsRefusedOnlyWhenTheSourcesIdentityIsKept()
     {
-        var identity = new[] { new DestinationColumn("Id", IsComputed: false, IsIdentity: true), Plain("Name") };
+        var identity = new[] { new CatalogColumn("Id", IsComputed: false, IsIdentity: true), Plain("Name") };
 
         var error = Assert.Throws<ColumnMatchException>(() => Match(["Name"], identity, keepIdentity: true));
         Assert.Contains("'Id'", error.Message, StringComparison.Ordinal);

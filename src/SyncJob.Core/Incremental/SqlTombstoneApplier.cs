@@ -110,45 +110,45 @@ public sealed class SqlTombstoneApplier : ITombstoneApplier
             throw new InvalidOperationException($"the step '{Describe(step)}' marks its ledger processed but no processed column is configured");
 
         await using var destination = new SqlConnection(destinationConnectionString);
-        await destination.OpenAsync(cancellationToken);
+        await destination.OpenAsync(cancellationToken).ConfigureAwait(false);
 
         var appliedThrough = 0L;
         if(!ledger.MarkProcessed)
         {
-            await EnsureHighWaterTableAsync(destination, cancellationToken);
-            appliedThrough = await ReadHighWaterAsync(destination, step, ledger, cancellationToken);
+            await EnsureHighWaterTableAsync(destination, cancellationToken).ConfigureAwait(false);
+            appliedThrough = await ReadHighWaterAsync(destination, step, ledger, cancellationToken).ConfigureAwait(false);
         }
 
         await using var source = new SqlConnection(sourceConnectionString);
-        await source.OpenAsync(cancellationToken);
+        await source.OpenAsync(cancellationToken).ConfigureAwait(false);
 
         // The source transaction opens before the ledger is read and stays open across the
         // destination's work, so nothing else can take the same rows in the meantime. It is
         // held longer than a transaction normally would be, and that is the price of never
         // marking a deletion that was not applied.
-        await using var sourceTransaction = (SqlTransaction)await source.BeginTransactionAsync(cancellationToken);
+        await using var sourceTransaction = (SqlTransaction)await source.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
 
         var (entries, problems) = await ReadLedgerAsync(
-            source, sourceTransaction, step, ledger, keyColumns, appliedThrough, cancellationToken);
+            source, sourceTransaction, step, ledger, keyColumns, appliedThrough, cancellationToken).ConfigureAwait(false);
 
         if(entries.Count == 0)
         {
-            await sourceTransaction.RollbackAsync(cancellationToken);
+            await sourceTransaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
             return new TombstoneResult(0, problems);
         }
 
         var deleted = await ApplyToDestinationAsync(
-            destination, step, ledger, keyColumns, entries, problems, appliedThrough, cancellationToken);
+            destination, step, ledger, keyColumns, entries, problems, appliedThrough, cancellationToken).ConfigureAwait(false);
 
         if(ledger.MarkProcessed)
         {
-            await MarkProcessedAsync(source, sourceTransaction, ledger, entries, cancellationToken);
-            await sourceTransaction.CommitAsync(cancellationToken);
+            await MarkProcessedAsync(source, sourceTransaction, ledger, entries, cancellationToken).ConfigureAwait(false);
+            await sourceTransaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         }
         else
         {
-            await sourceTransaction.RollbackAsync(cancellationToken);
+            await sourceTransaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
         }
 
         return new TombstoneResult(deleted, problems);
@@ -164,7 +164,7 @@ public sealed class SqlTombstoneApplier : ITombstoneApplier
         long appliedThrough,
         CancellationToken cancellationToken)
     {
-        await using var transaction = (SqlTransaction)await destination.BeginTransactionAsync(cancellationToken);
+        await using var transaction = (SqlTransaction)await destination.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
 
         // The same key can be recorded deleted more than once - a row deleted, restored and
         // deleted again. Joining on the duplicates would ask the destination to delete a row
@@ -184,7 +184,7 @@ public sealed class SqlTombstoneApplier : ITombstoneApplier
         for(var offset = 0; offset < tuples.Count; offset += perBatch)
         {
             var batch = tuples.GetRange(offset, Math.Min(perBatch, tuples.Count - offset));
-            deleted += await DeleteAsync(destination, transaction, step, keyColumns, batch, cancellationToken);
+            deleted += await DeleteAsync(destination, transaction, step, keyColumns, batch, cancellationToken).ConfigureAwait(false);
         }
 
         if(!ledger.MarkProcessed)
@@ -201,10 +201,10 @@ public sealed class SqlTombstoneApplier : ITombstoneApplier
                 reached = Math.Min(reached, problems.Min(x => x.LedgerId) - 1);
 
             if(reached > appliedThrough)
-                await WriteHighWaterAsync(destination, transaction, step, ledger, reached, cancellationToken);
+                await WriteHighWaterAsync(destination, transaction, step, ledger, reached, cancellationToken).ConfigureAwait(false);
         }
 
-        await transaction.CommitAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         return deleted;
     }
 
@@ -250,14 +250,14 @@ public sealed class SqlTombstoneApplier : ITombstoneApplier
         var entries = new List<LedgerEntry>();
         var problems = new List<TombstoneKeyProblem>();
 
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        while(await reader.ReadAsync(cancellationToken))
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while(await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
             var id = Convert.ToInt64(reader.GetValue(0), CultureInfo.InvariantCulture);
 
             if(ledger.KeyFormat == TombstoneKeyFormat.Legacy)
             {
-                var keyValue = await reader.IsDBNullAsync(1, cancellationToken) ? null : reader.GetValue(1).ToString();
+                var keyValue = await reader.IsDBNullAsync(1, cancellationToken).ConfigureAwait(false) ? null : reader.GetValue(1).ToString();
                 var parts = TombstoneKey.TryReadLegacy(id, keyValue, ledger.LegacySeparator, keyColumns.Count, out var problem);
 
                 if(parts is null)
@@ -319,7 +319,7 @@ public sealed class SqlTombstoneApplier : ITombstoneApplier
                 command.Parameters.AddWithValue($"@k{i}_{k}", tuples[i][k]);
         }
 
-        return await command.ExecuteNonQueryAsync(cancellationToken);
+        return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private async Task MarkProcessedAsync(
@@ -344,7 +344,7 @@ public sealed class SqlTombstoneApplier : ITombstoneApplier
             for(var i = 0; i < batch.Count; i++)
                 command.Parameters.AddWithValue(markers[i], batch[i].Id);
 
-            await command.ExecuteNonQueryAsync(cancellationToken);
+            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -368,7 +368,7 @@ public sealed class SqlTombstoneApplier : ITombstoneApplier
         try
         {
             await using var command = new SqlCommand(sql, destination);
-            await command.ExecuteNonQueryAsync(cancellationToken);
+            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
         catch(SqlException e) when(e.Number == 2714)
         {
@@ -388,7 +388,7 @@ public sealed class SqlTombstoneApplier : ITombstoneApplier
         command.Parameters.AddWithValue("@step", step.Id);
         command.Parameters.AddWithValue("@ledger", ledger.Table);
 
-        var value = await command.ExecuteScalarAsync(cancellationToken);
+        var value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
         return value is null or DBNull ? 0 : Convert.ToInt64(value, CultureInfo.InvariantCulture);
     }
 
@@ -417,7 +417,7 @@ public sealed class SqlTombstoneApplier : ITombstoneApplier
         command.Parameters.AddWithValue("@ledger", ledger.Table);
         command.Parameters.AddWithValue("@appliedThrough", appliedThrough);
 
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private static string Text(object value) =>

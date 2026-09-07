@@ -1,4 +1,4 @@
-using System.Collections;
+﻿using System.Collections;
 using System.Data.Common;
 using System.Diagnostics.CodeAnalysis;
 using Microsoft.Data.SqlClient;
@@ -88,14 +88,14 @@ internal sealed class RowBufferingReader : DbDataReader
 
     public override async Task<bool> ReadAsync(CancellationToken cancellationToken)
     {
-        if(!await _inner.ReadAsync(cancellationToken))
+        if(!await _inner.ReadAsync(cancellationToken).ConfigureAwait(false))
             return false;
 
         // Forwards, one column at a time: this is the only place the inner reader is
         // touched, so it never sees an out-of-order request.
         for(var ordinal = 0; ordinal < _values.Length; ordinal++)
         {
-            _values[ordinal] = await _inner.IsDBNullAsync(ordinal, cancellationToken)
+            _values[ordinal] = await _inner.IsDBNullAsync(ordinal, cancellationToken).ConfigureAwait(false)
                 ? DBNull.Value
                 : ReadPresentValue(ordinal);
         }
