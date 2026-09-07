@@ -138,6 +138,18 @@ public static class JobValidator
         foreach(var variable in step.Variables.Where(x => string.IsNullOrWhiteSpace(x.Name)))
             issues.Add(Error(where, "a variable has no name"));
 
+        // The engine supplies one of its own, and two things answering to one name in a
+        // textual substitution is a step that reads a different set every run depending
+        // on which was substituted first.
+        foreach(var reserved in step.Variables.Where(x =>
+                    string.Equals(x.Name, SyncJob.Core.Run.SourceSql.ReservedWatermarkName, StringComparison.OrdinalIgnoreCase)))
+        {
+            issues.Add(Error(
+                where,
+                $"the step declares a variable called '{reserved.Name}', which is the name the engine fills in " +
+                "with the step's own watermark. Rename it."));
+        }
+
         if(step.VariableSyntax != VariableSyntax.Legacy)
             return;
 

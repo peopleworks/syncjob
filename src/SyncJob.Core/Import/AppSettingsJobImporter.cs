@@ -1,6 +1,7 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using System.Text.Json.Serialization;
 using SyncJob.Core.Model;
+using SyncJob.Core.Run;
 
 namespace SyncJob.Core.Import;
 
@@ -392,11 +393,91 @@ public sealed class AppSettingsJobImporter : IJobImporter
         step.Incremental = new IncrementalPlan
         {
             ForceFullRead = incremental.ForceFullRefresh,
-            Watermark = new WatermarkPlan { StateTable = Blank(incremental.TrackingTable) }
+            Watermark = new WatermarkPlan { InitialValue = FirstRunValue(mode) }
         };
+
+        // TrackingTable is deliberately not carried into StateTable. The deployed table
+        // is dbo.SyncJobTracking, whose shape is one row per job because that engine had
+        // no steps; this engine keys a step, and pointing its store at that table gets
+        // the whole section refused. The old table is left where it is, with the history
+        // of the runs that came before still in it.
+        if(!string.IsNullOrWhiteSpace(incremental.TrackingTable))
+        {
+            step.Extensions["syncjob.json.incremental.trackingTable"] = incremental.TrackingTable!;
+
+            losses.Add(
+                $"The section '{sectionName}' keeps its watermark in '{incremental.TrackingTable}', which is the " +
+                "shape the previous engine used: one row for a whole job, because it had no steps. This engine " +
+                "keys a step and keeps its own table, so the watermark starts again from " +
+                $"{(FirstRunValue(mode) is { } initial ? $"'{initial}'" : "the beginning")} on the first run. The " +
+                "old table is untouched and still holds the history of the runs before this one.");
+        }
+
+        ApplyWatermarkToQuery(step, incremental.TrackingColumn!, mode, sectionName, losses);
 
         if(mode is not null && mode.Equals("RowVersion", StringComparison.OrdinalIgnoreCase))
             step.Extensions["syncjob.json.incremental.mode"] = mode;
+    }
+
+    /// <summary>
+    /// Where a first run starts, by mode. Without it the first run of a step whose SQL
+    /// names the watermark has nothing to compare against.
+    /// </summary>
+    private static string? FirstRunValue(string? mode) => mode?.ToLowerInvariant() switch
+    {
+        "rowversion" => "0x0000000000000000",
+        "changetracking" => "0",
+        _ => "1900-01-01T00:00:00"
+    };
+
+    /// <summary>
+    /// Puts the boundary into the query the operator wrote, which is the only place it
+    /// can go.
+    /// <para>
+    /// A predicate cannot be appended to SQL this engine did not build - it may be
+    /// grouped, may end in an ORDER BY - so the query is wrapped in a derived table and
+    /// the predicate goes outside it. That is exactly what the deployed engine's
+    /// <c>BuildIncrementalQuery</c> does, so a section imported this way keeps behaving
+    /// the way it behaves today, and the cost is stated rather than hidden: over a linked
+    /// server the wrap moves every row across before filtering any of them, and the fix
+    /// is to put the filter inside the query, where <c>${Watermark}</c> can be named
+    /// directly.
+    /// </para>
+    /// </summary>
+    private static void ApplyWatermarkToQuery(
+        SyncStep step, string trackingColumn, string? mode, string sectionName, List<string> losses)
+    {
+        var sql = step.Source.Sql;
+
+        // A procedure takes the boundary as a parameter and a table read has its
+        // predicate built by the engine; neither needs rewriting.
+        if(string.IsNullOrWhiteSpace(sql))
+            return;
+
+        var reference = $"${{{SourceSql.ReservedWatermarkName}}}";
+
+        // Already names it: the operator has put the filter where it belongs and there
+        // is nothing to wrap.
+        if(sql.Contains(reference, StringComparison.OrdinalIgnoreCase))
+            return;
+
+        var column = $"[{trackingColumn.Replace("]", "]]", StringComparison.Ordinal)}]";
+
+        // Substitution is verbatim - it has to be, because the deployed jobs put their
+        // variables inside OPENQUERY string literals where this engine cannot see the
+        // quoting. So the predicate supplies its own, and what it supplies depends on the
+        // key: a datetime needs quotes, and a rowversion refuses them outright with
+        // "Implicit conversion from data type nvarchar to timestamp is not allowed"
+        // because 0x... is already a literal.
+        var quoted = mode?.ToLowerInvariant() is not ("rowversion" or "changetracking");
+        var value = quoted ? $"'{reference}'" : reference;
+
+        step.Source.Sql = $"SELECT * FROM ( {sql} ) AS _incremental_ WHERE {column} > {value}";
+
+        losses.Add(
+            $"The query of section '{sectionName}' was wrapped so the watermark could filter it, which is what " +
+            "the previous engine did too. If that query reads a linked server, every row crosses the link before " +
+            $"the filter is applied: move the filter inside the query and name {reference} there instead.");
     }
 
     private static void ReadDeleteDetection(
