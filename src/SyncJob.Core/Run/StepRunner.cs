@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using Microsoft.Data.SqlClient;
 using SyncJob.Core.Copy;
 using SyncJob.Core.Incremental;
@@ -121,12 +121,18 @@ public sealed class StepRunner
 
         try
         {
+            // The watermark first, and the variables after it. A step whose source is SQL
+            // the operator wrote takes its watermark through a variable that reads the
+            // watermark table - that is the deployed shape, and SourceSql refuses the
+            // step without it. Resolving variables first means that variable runs before
+            // anything has created the table it reads, so the first run of every such
+            // step would fail on "Invalid object name" and the second would work.
+            var watermark = await ReadWatermarkAsync(job, step, destinationConnectionString, cancellationToken).ConfigureAwait(false);
+            result.PreviousWatermarkValue = watermark?.Value ?? step.Incremental?.Watermark?.InitialValue;
+
             var variables = await VariableResolver
                 .ResolveAsync(step, sourceConnectionString, destinationConnectionString, cancellationToken)
                 .ConfigureAwait(false);
-
-            var watermark = await ReadWatermarkAsync(job, step, destinationConnectionString, cancellationToken).ConfigureAwait(false);
-            result.PreviousWatermarkValue = watermark?.Value ?? step.Incremental?.Watermark?.InitialValue;
 
             var source = SourceSql.Build(step, variables, watermark);
 
@@ -534,23 +540,20 @@ public sealed class SqlStagedWatermarkReader : IStagedWatermarkReader
 
     /// <summary>
     /// A watermark is kept as text, so the format has to be one the next run's predicate
-    /// can compare against and one that does not depend on the machine's locale.
+    /// can compare against and one that does not depend on the machine's locale. A date
+    /// rendered with <c>ToString()</c> on a Spanish server and read back on an English
+    /// one is a watermark that moves by ten months.
     /// <para>
-    /// A date rendered with <c>ToString()</c> on a Spanish server and read back on an
-    /// English one is a watermark that moves by ten months, which is the kind of failure
-    /// that only ever happens in production. Dates are therefore ISO 8601 round-trip, a
-    /// rowversion is the <c>0x...</c> literal SQL Server itself accepts, and everything
-    /// else is formatted invariantly.
+    /// It is <see cref="SqlValueText"/>'s rendering and not one of its own, because the
+    /// value written here is the value <c>SourceSql</c> puts back into the next run's
+    /// predicate: two renderings of the same instant are a watermark that does not
+    /// compare against the column it came from. This side originally used the round-trip
+    /// <c>"O"</c> format, which always writes seven fractional digits - and a
+    /// <c>datetime</c> column, which the deployed schemas are full of, refuses any string
+    /// with seven of them even when they are all zeros. WP 1.5b found that against a real
+    /// server; the trimmed format is the one that survives both column types.
     /// </para>
     /// </summary>
-    public static string? Format(object? value) => value switch
-    {
-        null or DBNull => null,
-        string text => text,
-        DateTime date => date.ToString("O", CultureInfo.InvariantCulture),
-        DateTimeOffset offset => offset.ToString("O", CultureInfo.InvariantCulture),
-        byte[] bytes => "0x" + Convert.ToHexString(bytes),
-        IFormattable formattable => formattable.ToString(null, CultureInfo.InvariantCulture),
-        _ => value.ToString()
-    };
+    public static string? Format(object? value) =>
+        value is null or DBNull ? null : SqlValueText.Format(value);
 }

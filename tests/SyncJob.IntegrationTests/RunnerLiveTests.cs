@@ -1,4 +1,4 @@
-using SyncJob.Core.Model;
+﻿using SyncJob.Core.Model;
 using SyncJob.Core.Run;
 
 namespace SyncJob.IntegrationTests;
@@ -47,9 +47,7 @@ public sealed class RunnerLiveTests(SqlServerFixture fixture)
         await PublicationFixture.LoadAsync(source, "dbo.Ledger", rows: 500, firstId: 1);
         await PublicationFixture.LoadAsync(destination, "dbo.Ledger", rows: 100, firstId: 9_000);
 
-        var step = Step(PublicationMode.Replace);
-        step.Incremental = new IncrementalPlan { Watermark = new WatermarkPlan() };
-        step.FieldMaps.Add(new FieldMap { Source = "Id", Target = "Id", IsSyncKey = true });
+        var step = Watermarked(PublicationMode.Replace);
 
         var run = await RunAsync(source, destination, step);
 
@@ -213,9 +211,7 @@ public sealed class RunnerLiveTests(SqlServerFixture fixture)
 
         var before = await RowsAsync(destination, "dbo.Ledger");
 
-        var step = Step(PublicationMode.Replace);
-        step.Incremental = new IncrementalPlan { Watermark = new WatermarkPlan() };
-        step.FieldMaps.Add(new FieldMap { Source = "Id", Target = "Id", IsSyncKey = true });
+        var step = Watermarked(PublicationMode.Replace);
 
         var run = await RunAsync(source, destination, step, dryRun: true);
 
@@ -371,6 +367,35 @@ public sealed class RunnerLiveTests(SqlServerFixture fixture)
         Sources = { new Endpoint { Id = "src", Name = "the source", ConnectionString = source } },
         Steps = [.. steps]
     };
+
+    /// <summary>
+    /// A step that keeps a watermark, in the shape the engine insists on: SQL the
+    /// operator wrote cannot have a predicate appended to it - it may be grouped, may end
+    /// in an ORDER BY, may be an OPENQUERY string - so the watermark reaches it through a
+    /// variable, which is how the deployed system already does it.
+    /// </summary>
+    private static SyncStep Watermarked(PublicationMode mode)
+    {
+        var step = Step(mode);
+
+        step.Incremental = new IncrementalPlan { Watermark = new WatermarkPlan() };
+        step.FieldMaps.Add(new FieldMap { Source = "Id", Target = "Id", IsSyncKey = true });
+
+        step.Variables.Add(new SqlVariable
+        {
+            Name = "LastId",
+            Sql = "SELECT [Value] FROM dbo.SyncJobWatermark WHERE JobId = 'job' AND StepId = 'step';",
+            RunAgainstDestination = true,
+            DefaultValue = "0"
+        });
+
+        step.Source = new SourceQuery
+        {
+            Sql = "SELECT Id, Name, Amount, ChangedAt FROM dbo.Ledger WHERE Id > ${LastId}"
+        };
+
+        return step;
+    }
 
     private static SyncStep Step(PublicationMode mode, string id = "step") => new()
     {
