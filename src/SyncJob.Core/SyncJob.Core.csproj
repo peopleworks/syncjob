@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net9.0</TargetFramework>
@@ -6,6 +6,9 @@
     <Nullable>enable</Nullable>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <!-- A doc comment is for what is not obvious. Requiring one on every public
+         member buys filler on StartedAt and teaches contributors to write it. -->
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
     <Version>1.0.0</Version>
     <Description>The data-movement engine behind SyncJob: streaming copy, staging with a row guard, publication by swap, merge and watermark. Packaged so that CLIs, services and applications share one implementation instead of forking it.</Description>
     <Authors>Pedro Hernández (PeopleWorks)</Authors>
