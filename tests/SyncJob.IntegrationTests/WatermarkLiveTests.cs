@@ -1,4 +1,4 @@
-using SyncJob.Core.Incremental;
+﻿using SyncJob.Core.Incremental;
 
 namespace SyncJob.IntegrationTests;
 
@@ -13,6 +13,41 @@ namespace SyncJob.IntegrationTests;
 [Collection(SqlServerCollection.Name)]
 public sealed class WatermarkLiveTests(SqlServerFixture fixture)
 {
+    /// <summary>
+    /// The catch on error 2714 in <c>EnsureTableAsync</c> actually fires.
+    /// <para>
+    /// It was written on the reasoning that two runs of the same job starting together can
+    /// both find the table missing - which is sound, and was not evidence. WP 1.5c found
+    /// while testing the same catch in the lease store that this race takes real pressure
+    /// to provoke: eight hosts calling once never collided there, and it took a dozen
+    /// rounds on a dozen different table names. So this test has that shape, and the catch
+    /// is no longer a comment about a race nobody had seen.
+    /// </para>
+    /// <para>
+    /// A fresh table per round is the point: once the table exists the <c>IF</c> short
+    /// circuits and there is nothing left to race.
+    /// </para>
+    /// </summary>
+    [LiveFact]
+    public async Task TheStateTableSurvivesHostsRacingToCreateIt()
+    {
+        var connectionString = await fixture.CreateDatabaseAsync();
+
+        for(var round = 0; round < 12; round++)
+        {
+            var table = $"dbo.Watermark{round}";
+
+            var hosts = Enumerable.Range(0, 8).Select(host => Task.Run(async () =>
+                await new SqlWatermarkStore(table).WriteAsync(
+                    connectionString, "job", $"step{host}", $"v{host}", CancellationToken.None)));
+
+            // Any host that lost the race and did not swallow 2714 surfaces here.
+            await Task.WhenAll(hosts);
+
+            Assert.Equal(8, await SqlServerFixture.CountAsync(connectionString, table));
+        }
+    }
+
     [LiveFact]
     public async Task AStepWithNoWatermarkYetReadsAsNothing()
     {

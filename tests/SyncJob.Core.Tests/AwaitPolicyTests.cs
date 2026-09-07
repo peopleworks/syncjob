@@ -1,4 +1,4 @@
-using System.Text.RegularExpressions;
+﻿using System.Text.RegularExpressions;
 
 namespace SyncJob.Core.Tests;
 
@@ -52,11 +52,8 @@ public sealed class AwaitPolicyTests
                 if(!IsCode(text, match.Index))
                     continue;
 
-                var end = EndOfAwaitedExpression(text, match.Index + match.Length);
-                if(end < 0)
-                    continue;
-
-                if(text.AsSpan(end).TrimStart().StartsWith(".ConfigureAwait"))
+                var last = LastCallOfAwaitedExpression(text, match.Index + match.Length);
+                if(last is null or "ConfigureAwait")
                     continue;
 
                 unconfigured.Add($"{Path.GetFileName(file)}:{LineOf(text, match.Index)}: {Snippet(text, match.Index)}");
@@ -184,32 +181,27 @@ public sealed class AwaitPolicyTests
     }
 
     /// <summary>
-    /// The end of <c>a.b.C(...)</c> starting at <paramref name="start"/>, or -1 when
-    /// what is awaited is not a call - a bare task variable, which no site in this
-    /// engine awaits and which this test therefore does not judge.
+    /// The name of the last call in the awaited expression's chain - so
+    /// <c>a.b.RunAsync(x).ConfigureAwait(false)</c> answers "ConfigureAwait" and
+    /// <c>a.b.RunAsync(x)</c> answers "RunAsync" - or null when the chain cannot be
+    /// read.
+    /// <para>
+    /// The whole chain, not the first call in it. An earlier version of this stopped at
+    /// the first closing parenthesis and asked whether <c>.ConfigureAwait</c> came
+    /// next, which got three shapes exactly backwards: it flagged the correct
+    /// <c>await task.ConfigureAwait(false)</c> on a bare task variable, it flagged the
+    /// correct <c>await Factory(x).RunAsync(y).ConfigureAwait(false)</c>, and it let the
+    /// genuinely wrong <c>await task;</c> through - a bare await on a task variable
+    /// being precisely the form that captures the context. WP 1.5d hit all three and
+    /// worked around them, which is the wrong way round: a test that pushes correct code
+    /// into workarounds is worse than no test, because it is obeyed.
+    /// </para>
     /// </summary>
-    private static int EndOfAwaitedExpression(string text, int start)
+    private static string? LastCallOfAwaitedExpression(string text, int start)
     {
-        var i = start;
+        var i = text.AsSpan(start).StartsWith("new ") ? start + 4 : start;
+        string? last = null;
 
-        // `await new Extractor().ExtractAsync(...)`: the constructor's parentheses are
-        // not the ones that close the expression, so they are stepped over first and
-        // the method call after them is what is measured.
-        if(text.AsSpan(start).StartsWith("new "))
-        {
-            i = EndOfCall(text, start + 4);
-            if(i < 0 || i >= text.Length || text[i] != '.')
-                return -1;
-
-            i++;
-        }
-
-        return EndOfCall(text, i);
-    }
-
-    /// <summary>The end of <c>a.b.C(...)</c> starting at a name, or -1.</summary>
-    private static int EndOfCall(string text, int i)
-    {
         while(true)
         {
             var nameStart = i;
@@ -217,25 +209,45 @@ public sealed class AwaitPolicyTests
                 i++;
 
             if(i == nameStart)
-                return -1;
+                return null;
 
-            while(i < text.Length && char.IsWhiteSpace(text[i]))
-                i++;
+            last = text[nameStart..i];
+            i = SkipWhitespace(text, i);
 
             if(i < text.Length && text[i] == '<')
-                i = SkipBalanced(text, i, '<', '>');
-
-            if(i < 0 || i >= text.Length)
-                return -1;
-
-            if(text[i] == '.')
             {
-                i++;
-                continue;
+                i = SkipBalanced(text, i, '<', '>');
+                if(i < 0)
+                    return null;
+
+                i = SkipWhitespace(text, i);
             }
 
-            return text[i] == '(' ? SkipBalanced(text, i, '(', ')') : -1;
+            if(i < text.Length && text[i] == '(')
+            {
+                i = SkipBalanced(text, i, '(', ')');
+                if(i < 0)
+                    return null;
+
+                i = SkipWhitespace(text, i);
+            }
+
+            // Only a dot continues the chain. Anything else - a semicolon, a comparison,
+            // the ? of a conditional - ends the expression, and the name just read is
+            // the one that had to say ConfigureAwait.
+            if(i >= text.Length || text[i] != '.')
+                return last;
+
+            i = SkipWhitespace(text, i + 1);
         }
+    }
+
+    private static int SkipWhitespace(string text, int i)
+    {
+        while(i < text.Length && char.IsWhiteSpace(text[i]))
+            i++;
+
+        return i;
     }
 
     private static int SkipBalanced(string text, int i, char open, char close)
