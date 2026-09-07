@@ -1,4 +1,4 @@
-using Microsoft.Data.SqlClient;
+﻿using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -6,6 +6,11 @@ using Microsoft.Extensions.Logging;
 using Spectre.Console;
 using Spectre.Console.Cli;
 using SyncJob.Commands;
+using SyncJob.Core;
+using SyncJob.Core.Incremental;
+using SyncJob.Core.Model;
+using SyncJob.Core.Run;
+using SyncJob.Engine;
 using SyncJob.Security;
 using SyncJob.Services;
 using System;
@@ -13,10 +18,18 @@ using System.Collections.Generic;
 using System.ComponentModel;
 using System.Data;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
+
+// La ruta de run se prueba contra dos bases de verdad, y para eso hay que poder
+// llamar al mismo punto de entrada que escribe el operador. Una prueba que llama a
+// otra cosa prueba otra cosa.
+[assembly: InternalsVisibleTo("SyncJob.IntegrationTests")]
 
 namespace SyncJob
 {
@@ -74,13 +87,6 @@ namespace SyncJob
         public bool KeepIdentity { get; set; }
 
         public int MinRowThresholdToCommit { get; set; }
-    }
-
-    public class SourceDataPackage
-    {
-        public string[] SourceColumnNames { get; set; } = Array.Empty<string>();
-
-        public List<object[]> Rows { get; set; } = new List<object[]>();
     }
 
     // CLI
@@ -150,7 +156,7 @@ namespace SyncJob
         [CommandOption("--min-commit <N>")]
         public int? MinCommit { get; set; }
 
-        [Description("No hacer commit Stage -> Final (pruebas)")]
+        [Description("Si el origen queda por debajo de --min-commit, no publicar y seguir (en vez de abortar)")]
         [CommandOption("--skip-commit")]
         public bool SkipCommit { get; set; }
 
@@ -176,11 +182,11 @@ namespace SyncJob
 
     public sealed class RunSettings : ConfigSettings
     {
-        [Description("No escribe en SQL. Verifica conexiones y mapeos.")]
+        [Description("No escribe en el destino. Copia el origen a una stage propia y dice qué habría pasado.")]
         [CommandOption("--dry-run")]
         public bool DryRun { get; set; }
 
-        [Description("Escribe directo en tabla Final (sin Stage)")]
+        [Description("En desuso: el motor siempre pasa por una stage que crea él mismo. Se acepta y se explica en la corrida.")]
         [CommandOption("--direct")]
         public bool Direct { get; set; }
 
@@ -207,7 +213,7 @@ namespace SyncJob
 
     public sealed class ValidateSettings : ConfigSettings
     {
-        [Description("Valida contra tabla Final (modo directo)")]
+        [Description("En desuso: la validación siempre comprueba la tabla Final.")]
         [CommandOption("--direct")]
         public bool Direct { get; set; }
     }
@@ -320,9 +326,13 @@ namespace SyncJob
         }
 
         /// <summary>
-        /// Ejecuta como CLI (comportamiento actual)
+        /// Ejecuta como CLI (comportamiento actual).
+        ///
+        /// Internal y no privado para que las pruebas en vivo entren por aqui, que es
+        /// exactamente por donde entra el operador: con el mismo parser, las mismas
+        /// banderas y los mismos codigos de salida.
         /// </summary>
-        static int RunAsCli(string[] args)
+        internal static int RunAsCli(string[] args)
         {
             var app = new CommandApp();
             app.Configure(
@@ -463,9 +473,19 @@ namespace SyncJob
         }
 
         // Commands
-        public sealed class RunCommand : Command<RunSettings>
+        public sealed class RunCommand : AsyncCommand<RunSettings>
         {
-            public override int Execute(CommandContext context, RunSettings settings)
+            /// <summary>
+            /// Carga, adapta, ejecuta e informa. Nada mas.
+            ///
+            /// La tuberia entera - leer el origen, armar el stage, decidir si se
+            /// publica y publicar - vive en SyncJob.Core y ya no esta escrita aqui.
+            /// Estaba escrita aqui, en el servicio de Windows y en el comando central,
+            /// tres veces, y las tres se separaron: esta tenia la lista explicita de
+            /// columnas, el intercambio por nombres y el piso de filas, y las otras dos
+            /// no. Un arreglo que hay que aplicar tres veces se aplica una.
+            /// </summary>
+            public override async Task<int> ExecuteAsync(CommandContext context, RunSettings settings)
             {
                 ShowHeader();
                 InitLogging(settings);
@@ -477,265 +497,9 @@ namespace SyncJob
                         return 0;
                     }
 
-                    // --all: se corre una seccion por vez reusando este mismo
-                    // comando. Nada de logica paralela que despues se bifurque
-                    // de la ruta normal, que es exactamente el problema que
-                    // tenia el commit duplicado.
-                    if(settings.All)
-                    {
-                        var secciones = ListarSecciones(settings.ConfigPath);
-                        AnsiConsole.MarkupLine(
-                            $"[cyan]→[/] {secciones.Count} secciones: [bold]{string.Join(", ", secciones)}[/]");
-
-                        var fallidas = new List<string>();
-                        foreach(var s in secciones)
-                        {
-                            AnsiConsole.MarkupLine($"\n[cyan]═══ {s} ═══[/]");
-                            var unaSola = new RunSettings
-                            {
-                                ConfigPath = settings.ConfigPath,
-                                Section = s,
-                                DryRun = settings.DryRun,
-                                Direct = settings.Direct,
-                                Append = settings.Append,
-                                FullRefresh = settings.FullRefresh,
-                                InitTracking = settings.InitTracking,
-                                ForceCommit = settings.ForceCommit,
-                                SkipCommit = settings.SkipCommit,
-                                All = false
-                            };
-
-                            int codigo;
-                            try { codigo = Execute(context, unaSola); }
-                            catch(Exception ex)
-                            {
-                                Log.Error($"Section '{s}' failed: {ex.Message}", evt: "run.all.section.error");
-                                AnsiConsole.MarkupLine($"[red]✗[/] {s}: {Markup.Escape(ex.Message)}");
-                                codigo = 1;
-                            }
-
-                            if(codigo != 0)
-                            {
-                                fallidas.Add(s);
-                                if(!settings.ContinueOnError)
-                                {
-                                    AnsiConsole.MarkupLine(
-                                        $"[red]✗[/] Se detuvo en '{s}'. Use --continue-on-error para seguir con las demás.");
-                                    return 1;
-                                }
-                            }
-                        }
-
-                        if(fallidas.Count > 0)
-                        {
-                            AnsiConsole.MarkupLine($"\n[red]✗[/] Fallaron: [bold]{string.Join(", ", fallidas)}[/]");
-                            return 1;
-                        }
-
-                        AnsiConsole.MarkupLine($"\n[green]✓[/] {secciones.Count} secciones sincronizadas");
-                        return 0;
-                    }
-
-                    var cfg = LoadConfig(settings.ConfigPath, settings.Section);
-                    ApplyOverrides(cfg, settings);
-                    ValidateConfig(cfg, settings.Direct);
-
-                    // Inicializar tabla de tracking si se solicita
-                    if(settings.InitTracking && cfg.Incremental?.Enabled == true)
-                    {
-                        AnsiConsole.Status().Start("Inicializando tabla de tracking...", ctx =>
-                        {
-                            IncrementalSyncEngine.EnsureTrackingTable(
-                                cfg.Destination!.ConnectionString!,
-                                cfg.Incremental.TrackingTable ?? "dbo.SyncJobTracking");
-                        });
-                        AnsiConsole.MarkupLine("[green]Tabla de tracking inicializada correctamente[/]");
-                        return 0;
-                    }
-
-                    // Override de full refresh
-                    if(settings.FullRefresh && cfg.Incremental != null)
-                    {
-                        cfg.Incremental.ForceFullRefresh = true;
-                        AnsiConsole.MarkupLine("[yellow]Modo Full Refresh activado[/] (ignorando tracking incremental)");
-                    }
-
-                    ShowConfigSummary(cfg);
-
-                    // Probe TOP N del origen para validar permisos y tiempo
-                    int probeN = Math.Max(1, settings.ProbeTop ?? 1);
-                    var probeRes = ProbeSourceTopN(cfg, probeN, 30);
-                    AnsiConsole.MarkupLine(
-                        $"Probe origen TOP {probeN}: [bold]{probeRes.rows}[/] filas en [bold]{probeRes.elapsedMs} ms[/]");
-                    if(probeRes.elapsedMs > 2000)
-                    {
-                        AnsiConsole.MarkupLine(
-                            "[yellow]Aviso:[/] El SELECT TOP es más lento de lo esperado (>2s). Considera:");
-                        AnsiConsole.MarkupLine(
-                            "- Revisar índices en columnas de filtros/joins de la vista/consulta origen.");
-                        AnsiConsole.MarkupLine(
-                            "- Probar con --top para pruebas y/o particionar por rangos de fecha/ID.");
-                    }
-
-                    if(settings.DryRun)
-                    {
-                        AnsiConsole.Status()
-                            .Start(
-                                "Verificando conexiones y esquema...",
-                                ctx =>
-                                {
-                                    TestConnectivity(cfg);
-                                    var sourceCols = ReadSourceSchema(cfg);
-                                    _ = BuildDestToSourceIndex(cfg, sourceCols);
-                                    if(settings.Direct)
-                                        _ = GetFinalSchema(cfg);
-                                    else
-                                        _ = GetStageSchema(cfg);
-                                });
-
-                        AnsiConsole.MarkupLine("[green]Dry-run OK[/]: Conexiones y mapeos válidos.");
-                        Log.Info("Dry-run OK", evt: "run.dryrun.ok");
-                        return 0;
-                    }
-
-                    // Ejecución real
-                    SyncTrackingState? lastState = null;
-                    string jobId = string.Empty;
-
-                    // Si el modo incremental está habilitado, obtener estado previo
-                    if(cfg.Incremental?.Enabled == true)
-                    {
-                        jobId = cfg.Incremental.JobIdentifier ?? IncrementalSyncEngine.GenerateJobIdentifier(cfg);
-                        AnsiConsole.MarkupLine($"[cyan]Modo Incremental:[/] Job ID = [bold]{jobId}[/]");
-
-                        IncrementalSyncEngine.EnsureTrackingTable(
-                            cfg.Destination!.ConnectionString!,
-                            cfg.Incremental.TrackingTable ?? "dbo.SyncJobTracking");
-
-                        lastState = IncrementalSyncEngine.GetLastSyncState(
-                            cfg.Destination.ConnectionString!,
-                            cfg.Incremental.TrackingTable ?? "dbo.SyncJobTracking",
-                            jobId);
-
-                        if(lastState != null)
-                        {
-                            AnsiConsole.MarkupLine($"[cyan]Última sincronización:[/] {lastState.LastSyncTime:yyyy-MM-dd HH:mm:ss}");
-                            AnsiConsole.MarkupLine($"[cyan]Filas anteriores:[/] {lastState.RowsProcessed:N0} ({lastState.RowsInserted:N0} ins, {lastState.RowsUpdated:N0} upd, {lastState.RowsDeleted:N0} del)");
-                        }
-                        else
-                        {
-                            AnsiConsole.MarkupLine("[yellow]Primera sincronización[/] (no hay tracking previo)");
-                        }
-
-                        // Modificar query origen para filtro incremental
-                        if(!string.IsNullOrWhiteSpace(cfg.Source!.Query))
-                        {
-                            cfg.Source.Query = IncrementalSyncEngine.BuildIncrementalQuery(
-                                cfg.Source.Query,
-                                cfg.Incremental,
-                                lastState);
-                        }
-                    }
-
-                    SourceDataPackage data = new();
-                    AnsiConsole.Status()
-                        .Start(
-                            cfg.Incremental?.Enabled == true ? "Leyendo cambios del origen (incremental)..." : "Leyendo datos del origen...",
-                            ctx =>
-                            {
-                                data = ReadSourceData(cfg);
-                            });
-                    AnsiConsole.MarkupLine($"Total filas {(cfg.Incremental?.Enabled == true ? "modificadas" : "origen")}: [bold]{data.Rows.Count}[/]");
-                    Log.Info($"Source rows={data.Rows.Count}", evt: "run.source.rows");
-
-                    bool doCommit = true;
-                    if(data.Rows.Count < cfg.Options!.MinRowThresholdToCommit)
-                    {
-                        if(settings.ForceCommit)
-                        {
-                            AnsiConsole.MarkupLine(
-                                $"[yellow]Aviso:[/] Forzando commit con {data.Rows.Count} < MinRowThresholdToCommit={cfg.Options.MinRowThresholdToCommit}");
-                            Log.Warn($"Forcing commit with rows={data.Rows.Count} < min={cfg.Options.MinRowThresholdToCommit}", evt: "run.commit.force");
-                        } else if(settings.SkipCommit)
-                        {
-                            doCommit = false;
-                            AnsiConsole.MarkupLine(
-                                $"[yellow]Aviso:[/] {data.Rows.Count} < MinRowThresholdToCommit={cfg.Options.MinRowThresholdToCommit}. Se omitirá commit.");
-                            Log.Warn($"Skipping commit with rows={data.Rows.Count} < min={cfg.Options.MinRowThresholdToCommit}", evt: "run.commit.skip");
-                        } else
-                        {
-                            Log.Warn($"Abort: rows={data.Rows.Count} < min={cfg.Options.MinRowThresholdToCommit}", evt: "run.abort.min");
-                            throw new Exception(
-                                $"Filas ({data.Rows.Count}) < MinRowThresholdToCommit ({cfg.Options.MinRowThresholdToCommit}). Abortado.");
-                        }
-                    }
-
-                    if(settings.Direct)
-                    {
-                        if(doCommit)
-                        {
-                            AnsiConsole.Status().Start("Cargando Final (directo)...", ctx => LoadFinalDirect(cfg, data, settings.Append));
-                            Log.Info("Direct load completed", evt: "run.direct.done");
-                        }
-                        else
-                        {
-                            AnsiConsole.MarkupLine("[yellow]Aviso:[/] Modo directo y doCommit=false. No se escribi3 en Final.");
-                        }
-                    }
-                    else
-                    {
-                        AnsiConsole.Status().Start("Cargando Stage en paralelo...", ctx => LoadStageInParallel(cfg, data));
-                        if(doCommit)
-                        {
-                            AnsiConsole.Status()
-                                .Start("Commit Stage -> Final...", ctx => CommitStageToFinal(cfg, data.Rows.Count, settings.Append));
-                            Log.Info("Commit completed", evt: "run.commit.done");
-                        }
-                    }
-
-                    // Guardar estado de tracking incremental
-                    if(cfg.Incremental?.Enabled == true && doCommit)
-                    {
-                        var newState = new SyncTrackingState
-                        {
-                            JobIdentifier = jobId,
-                            LastSyncTime = DateTime.UtcNow,
-                            RowsProcessed = data.Rows.Count,
-                            RowsInserted = data.Rows.Count, // TODO: Obtener metrics reales del MERGE
-                            RowsUpdated = 0,
-                            RowsDeleted = 0,
-                            Success = true
-                        };
-
-                        // Extraer valor máximo de tracking column
-                        if(!string.IsNullOrWhiteSpace(cfg.Incremental.TrackingColumn))
-                        {
-                            var maxValue = IncrementalSyncEngine.ExtractMaxTrackingValue(
-                                data,
-                                cfg.Incremental.TrackingColumn,
-                                cfg.Incremental.Mode);
-
-                            if(cfg.Incremental.Mode == TrackingMode.Timestamp && maxValue is DateTime dt)
-                            {
-                                newState.LastSyncTime = dt;
-                            }
-                            else if(cfg.Incremental.Mode == TrackingMode.RowVersion && maxValue is byte[] rv)
-                            {
-                                newState.LastRowVersion = rv;
-                            }
-                        }
-
-                        IncrementalSyncEngine.SaveSyncState(
-                            cfg.Destination!.ConnectionString!,
-                            cfg.Incremental.TrackingTable ?? "dbo.SyncJobTracking",
-                            newState);
-
-                        AnsiConsole.MarkupLine($"[cyan]Estado de tracking guardado:[/] {newState.LastSyncTime:yyyy-MM-dd HH:mm:ss}");
-                    }
-
-                    AnsiConsole.MarkupLine("[green]=== Sync OK ===[/]");
-                    Log.Info("Run OK", evt: "run.ok");
-                    return 0;
+                    return settings.All
+                        ? await EjecutarTodasLasSecciones(settings)
+                        : await EjecutarSeccion(settings, settings.Section, CancellationToken.None);
                 } catch(Exception ex)
                 {
                     AnsiConsole.WriteException(
@@ -744,13 +508,380 @@ namespace SyncJob
                     Log.Error("Run failed", ex, evt: "run.error");
                     PrintHelpfulHints(ex, settings);
                     return 1;
+                } finally
+                {
+                    Log.Shutdown();
                 }
             }
         }
 
-        public sealed class ValidateCommand : Command<ValidateSettings>
+        /// <summary>
+        /// <c>--all</c>: una seccion por vez, por la MISMA ruta que una sola.
+        ///
+        /// Lo unico que cambia entre una vuelta y otra es el nombre de la seccion. Antes
+        /// se clonaba el RunSettings campo por campo, y la copia se olvidaba de
+        /// --min-commit, --top, --batch-size, --maxdop, --sp, --probe-top y de las
+        /// opciones de certificado: quien escribia <c>run --all --min-commit 0</c>
+        /// obtenia un piso que no habia pedido y no se enteraba. Pasar el nombre y no
+        /// una copia hace que esa clase de olvido no se pueda escribir.
+        /// </summary>
+        private static async Task<int> EjecutarTodasLasSecciones(RunSettings settings)
         {
-            public override int Execute(CommandContext context, ValidateSettings settings)
+            var secciones = ListarSecciones(settings.ConfigPath);
+            AnsiConsole.MarkupLine(
+                $"[cyan]→[/] {secciones.Count} secciones: [bold]{Markup.Escape(string.Join(", ", secciones))}[/]");
+
+            var fallidas = new List<string>();
+            foreach(var s in secciones)
+            {
+                AnsiConsole.MarkupLine($"\n[cyan]═══ {Markup.Escape(s)} ═══[/]");
+
+                int codigo;
+                try
+                {
+                    codigo = await EjecutarSeccion(settings, s, CancellationToken.None);
+                } catch(Exception ex)
+                {
+                    Log.Error($"Section '{s}' failed: {ex.Message}", evt: "run.all.section.error");
+                    AnsiConsole.MarkupLine($"[red]✗[/] {Markup.Escape(s)}: {Markup.Escape(ex.Message)}");
+                    codigo = 1;
+                }
+
+                if(codigo == 0)
+                    continue;
+
+                fallidas.Add(s);
+                if(!settings.ContinueOnError)
+                {
+                    AnsiConsole.MarkupLine(
+                        $"[red]✗[/] Se detuvo en '{Markup.Escape(s)}'. Use --continue-on-error para seguir con las demás.");
+                    return 1;
+                }
+            }
+
+            if(fallidas.Count > 0)
+            {
+                AnsiConsole.MarkupLine($"\n[red]✗[/] Fallaron: [bold]{Markup.Escape(string.Join(", ", fallidas))}[/]");
+                return 1;
+            }
+
+            AnsiConsole.MarkupLine($"\n[green]✓[/] {secciones.Count} secciones sincronizadas");
+            return 0;
+        }
+
+        /// <summary>
+        /// Una seccion, de principio a fin: se carga el archivo, se traduce al modelo
+        /// del motor, se corre y se cuenta que paso.
+        ///
+        /// El codigo de salida sale de <see cref="JobRun.Status"/> y no de un catch. El
+        /// motor no lanza por nada que sea un resultado de la corrida - una corrida de
+        /// treinta pasos cuyo septimo falla no puede perder los otros veintinueve
+        /// resultados - asi que el fallo vuelve como estado y con un mensaje que dice
+        /// que hacer.
+        /// </summary>
+        private static async Task<int> EjecutarSeccion(RunSettings settings, string seccion, CancellationToken ct)
+        {
+            var cfg = LoadConfig(settings.ConfigPath, seccion);
+            ApplyOverrides(cfg, settings);
+            ValidateConfig(cfg);
+
+            var (job, perdidas) = await CoreAdapter.JobAsync(
+                seccion, LeerSeccionCruda(settings.ConfigPath, seccion), cfg, settings, ct);
+
+            if(settings.InitTracking)
+                return await InicializarTracking(job, cfg, perdidas, ct);
+
+            ShowConfigSummary(cfg);
+            AvisarDeFullRefresh(job, settings);
+            Probar(cfg, settings);
+
+            var run = await Correr(job, cfg, settings, seccion, ct);
+
+            return Informar(run, perdidas, seccion);
+        }
+
+        /// <summary>
+        /// El JSON crudo de una seccion, que es lo que lee el importador del motor.
+        ///
+        /// El importador y no un mapeo escrito a mano aqui: es el mismo lector que
+        /// importa un archivo para inspeccionarlo, ya sabe cosas que este tendria que
+        /// aprender - cual origen gana cuando la seccion trae consulta y procedimiento a
+        /// la vez - y un segundo mapeo seria una segunda cosa que mantener al dia.
+        /// </summary>
+        private static string LeerSeccionCruda(string path, string seccion)
+        {
+            using var doc = JsonDocument.Parse(File.ReadAllText(path));
+
+            if(!doc.RootElement.TryGetProperty(seccion, out var elemento))
+                throw new Exception($"No se encontró la sección '{seccion}' en {path}");
+
+            return elemento.GetRawText();
+        }
+
+        /// <summary>
+        /// La corrida, con el renglon de estado de Spectre siguiendola.
+        ///
+        /// Las filas copiadas se mueven mientras se copian, que es lo nuevo y no es
+        /// decoracion: es la diferencia entre un trabajo lento y un trabajo colgado, y
+        /// hasta ahora la pantalla decia "Leyendo datos del origen..." y no cambiaba
+        /// mas hasta que terminaba.
+        /// </summary>
+        private static Task<JobRun> Correr(
+            SyncJobDefinition job, SyncConfig cfg, RunSettings settings, string seccion, CancellationToken ct)
+        {
+            string titulo = settings.DryRun
+                ? $"Ensayo de '{seccion}': se prepara todo y no se escribe nada..."
+                : $"Ejecutando '{seccion}'...";
+
+            return AnsiConsole.Status()
+                .Spinner(Spinner.Known.Dots)
+                .StartAsync(
+                    titulo,
+                    ctx => new JobRunner().RunAsync(
+                        job,
+                        CoreAdapter.Options(cfg, settings, triggeredBy: "cli", new ProgresoEnPantalla(ctx)),
+                        ct));
+        }
+
+        /// <summary>
+        /// Lleva el progreso del motor al renglon de estado.
+        ///
+        /// El copiador llama a esto desde su propia devolucion de llamada, cada diez mil
+        /// filas y desde el hilo de SqlBulkCopy; por eso no hace nada que pueda tardar y
+        /// por eso el motor traga lo que lance. Escribir el estado alcanza: el display en
+        /// vivo de Spectre se refresca solo.
+        /// </summary>
+        private sealed class ProgresoEnPantalla : IProgress<RunProgress>
+        {
+            private readonly StatusContext _ctx;
+
+            public ProgresoEnPantalla(StatusContext ctx) => _ctx = ctx;
+
+            public void Report(RunProgress value)
+            {
+                _ctx.Status(Markup.Escape(value.Message));
+                Log.Debug(value.Message, evt: "run.progress");
+            }
+        }
+
+        /// <summary>
+        /// <c>--full-refresh</c> le dice al paso que ignore su marca de agua por esta
+        /// corrida. Se dice en voz alta cuando la seccion no lleva marca de agua: la
+        /// bandera se sigue escribiendo y no hace nada, y eso es justo lo que no debe
+        /// pasar en silencio.
+        /// </summary>
+        private static void AvisarDeFullRefresh(SyncJobDefinition job, RunSettings settings)
+        {
+            if(!settings.FullRefresh)
+                return;
+
+            bool incremental = job.Steps.Count > 0 && job.Steps[0].Incremental is not null;
+
+            AnsiConsole.MarkupLine(incremental
+                ? "[yellow]Modo Full Refresh activado[/] (se ignora la marca de agua por esta corrida)"
+                : "[yellow]--full-refresh no aplica:[/] la sección no lleva marca de agua, ya lee todo cada vez.");
+        }
+
+        /// <summary>
+        /// Probe TOP N del origen: mide permisos y tiempo antes de mover nada. Lo usan
+        /// <c>run</c> y <c>validate</c>, que es como estaba escrito dos veces.
+        /// </summary>
+        private static void Probar(SyncConfig cfg, ConfigSettings settings)
+        {
+            int probeN = Math.Max(1, settings.ProbeTop ?? 1);
+            var probeRes = ProbeSourceTopN(cfg, probeN, 30);
+
+            AnsiConsole.MarkupLine(
+                $"Probe origen TOP {probeN}: [bold]{probeRes.rows}[/] filas en [bold]{probeRes.elapsedMs} ms[/]");
+
+            if(probeRes.elapsedMs <= 2000)
+                return;
+
+            AnsiConsole.MarkupLine("[yellow]Aviso:[/] El SELECT TOP es más lento de lo esperado (>2s). Considera:");
+            AnsiConsole.MarkupLine("- Revisar índices en columnas de filtros/joins de la vista/consulta origen.");
+            AnsiConsole.MarkupLine("- Probar con --top para pruebas y/o particionar por rangos de fecha/ID.");
+        }
+
+        /// <summary>
+        /// <c>--init-tracking</c>: deja lista la tabla de marcas de agua del destino y
+        /// dice que hay en ella para este trabajo.
+        ///
+        /// La crea leyendola, porque leer es lo que hace la corrida y el mismo camino no
+        /// puede dejar una tabla con otra forma. Antes esto llamaba a
+        /// IncrementalSyncEngine.EnsureTrackingTable, que creaba una tabla que el motor
+        /// no usa; y cuando la seccion no era incremental la bandera se ignoraba y el
+        /// comando seguia de largo hasta hacer una carga completa de produccion, que es
+        /// lo ultimo que espera quien escribio --init-tracking.
+        /// </summary>
+        private static async Task<int> InicializarTracking(
+            SyncJobDefinition job, SyncConfig cfg, IReadOnlyList<string> perdidas, CancellationToken ct)
+        {
+            var paso = job.Steps.Count > 0 ? job.Steps[0] : null;
+            if(paso is null)
+            {
+                AnsiConsole.MarkupLine("[red]✗[/] La sección no describe ningún paso, así que no hay nada que inicializar.");
+                return 1;
+            }
+
+            string tabla = paso.Incremental?.Watermark?.StateTable ?? SqlWatermarkStore.DefaultTable;
+            var almacen = new SqlWatermarkStore(tabla);
+            string destino = cfg.Destination!.ConnectionString!;
+
+            Watermark? actual = null;
+            await AnsiConsole.Status()
+                .StartAsync(
+                    $"Preparando {tabla} en el destino...",
+                    async _ => actual = await almacen.ReadAsync(destino, job.Id, paso.Id, ct));
+
+            AnsiConsole.MarkupLine($"[green]✓[/] Tabla de marcas de agua lista: [bold]{Markup.Escape(tabla)}[/]");
+
+            AnsiConsole.MarkupLine(actual is null
+                ? $"[cyan]Sin marca previa[/] para {Markup.Escape(job.Id)} / {Markup.Escape(paso.Id)}: la próxima corrida leerá todo."
+                : $"[cyan]Marca actual[/] {Markup.Escape(job.Id)} / {Markup.Escape(paso.Id)}: " +
+                  $"[bold]{Markup.Escape(actual.Value)}[/] (anterior: {Markup.Escape(actual.PreviousValue ?? "-")}, " +
+                  $"movida {actual.UpdatedAt:yyyy-MM-dd HH:mm:ss}Z)");
+
+            if(paso.Incremental?.Watermark is null)
+            {
+                AnsiConsole.MarkupLine(
+                    "[yellow]Aviso:[/] la sección no define Incremental.TrackingColumn, así que nada escribirá en " +
+                    "esta tabla: cada corrida seguirá leyendo todo el origen.");
+            }
+
+            ImprimirPerdidas(perdidas);
+            Log.Info($"Tracking table ready: {tabla}", evt: "run.tracking.init");
+            return 0;
+        }
+
+        /// <summary>
+        /// El resumen del final: los numeros reales de cada paso, lo que el archivo
+        /// decia y no cruzo, y el codigo de salida.
+        ///
+        /// Los numeros salen del trabajo y no de la intencion. Antes esta ruta guardaba
+        /// RowsInserted = filas del origen con un <c>// TODO: Obtener metrics reales del
+        /// MERGE</c> al lado; ahora los pone el publicador, que es quien sabe cuantas
+        /// filas entraron, cuantas cambiaron y cuantas salieron.
+        /// </summary>
+        private static int Informar(JobRun run, IReadOnlyList<string> perdidas, string seccion)
+        {
+            // Un StepResult con el id reservado no habla de un paso sino de la corrida
+            // - una concesion que se quedo tomada en otro lado, un trabajo que no
+            // valido - y no es un renglon de la tabla llamado "(run)".
+            var pasos = run.Steps.Where(x => x.StepId != JobRunner.RunLevelStepId).ToList();
+            var deLaCorrida = run.Steps.Where(x => x.StepId == JobRunner.RunLevelStepId).ToList();
+
+            if(pasos.Count > 0)
+            {
+                var tabla = new Table().Border(TableBorder.Rounded).Title("[bold]Resultado[/]");
+                tabla.AddColumn("Paso");
+                tabla.AddColumn("Estado");
+                tabla.AddColumn(new TableColumn("Leídas").RightAligned());
+                tabla.AddColumn(new TableColumn("Insertadas").RightAligned());
+                tabla.AddColumn(new TableColumn("Actualizadas").RightAligned());
+                tabla.AddColumn(new TableColumn("Borradas").RightAligned());
+                tabla.AddColumn(new TableColumn("Duración").RightAligned());
+
+                foreach(var paso in pasos)
+                {
+                    tabla.AddRow(
+                        Markup.Escape(paso.StepName),
+                        Pintar(paso.Status),
+                        Numero(paso.RowsRead),
+                        Numero(paso.RowsInserted),
+                        Numero(paso.RowsUpdated),
+                        Numero(paso.RowsDeleted),
+                        paso.Duration is { } d ? d.TotalSeconds.ToString("N1", CultureInfo.InvariantCulture) + " s" : "-");
+                }
+
+                AnsiConsole.Write(tabla);
+            }
+
+            foreach(var paso in pasos.Where(x => x.WatermarkValue is not null))
+            {
+                AnsiConsole.MarkupLine(
+                    $"[cyan]Marca de agua[/] {Markup.Escape(paso.StepName)}: " +
+                    $"{Markup.Escape(paso.PreviousWatermarkValue ?? "(ninguna)")} → [bold]{Markup.Escape(paso.WatermarkValue!)}[/]");
+            }
+
+            // El mensaje es lo que se lee a las tres de la mañana para decidir si se
+            // fuerza; se imprime entero y sin recortar.
+            foreach(var paso in pasos.Where(x => !string.IsNullOrWhiteSpace(x.Message)))
+                AnsiConsole.MarkupLine($"[grey]{Markup.Escape(paso.StepName)}:[/] {Markup.Escape(paso.Message!)}");
+
+            foreach(var nota in deLaCorrida)
+                AnsiConsole.MarkupLine($"[yellow]La corrida:[/] {Markup.Escape(nota.Message ?? nota.Status.ToString())}");
+
+            ImprimirPerdidas(perdidas);
+
+            string totales =
+                $"{Numero(run.RowsRead)} leídas, {Numero(run.RowsInserted)} insertadas, " +
+                $"{Numero(run.RowsUpdated)} actualizadas, {Numero(run.RowsDeleted)} borradas";
+
+            switch(run.Status)
+            {
+                case RunStatus.Succeeded:
+                    AnsiConsole.MarkupLine($"[green]=== Sync OK ===[/] {Markup.Escape(seccion)}: {totales}");
+                    Log.Info($"Run OK: {totales}", evt: "run.ok");
+                    return 0;
+
+                // Un salto es una tabla que alguien pidio cargar y que a proposito no se
+                // cargo: es un informe y no una llamada telefonica, asi que sale con 0 -
+                // pero se dice cual y por que, que es la mitad que importa.
+                case RunStatus.Skipped:
+                    var omitidos = pasos.Where(x => x.Status == RunStatus.Skipped).Select(x => x.StepName).ToList();
+                    AnsiConsole.MarkupLine(
+                        $"[yellow]=== Sin publicar ===[/] {Markup.Escape(seccion)}: no se publicó " +
+                        $"[bold]{Markup.Escape(string.Join(", ", omitidos))}[/]. El destino quedó como estaba, " +
+                        "una carga más viejo. El motivo está arriba.");
+                    Log.Warn($"Run skipped: {string.Join(", ", omitidos)}", evt: "run.skipped");
+                    return 0;
+
+                default:
+                    AnsiConsole.MarkupLine($"[red]=== Sync falló ===[/] {Markup.Escape(seccion)}: {totales}");
+                    Log.Error($"Run failed: {totales}", evt: "run.failed");
+                    return 1;
+            }
+        }
+
+        /// <summary>
+        /// Lo que el archivo decia y no llego al motor.
+        ///
+        /// Se imprime siempre. Un operador al que no se le avisa es un operador que cree
+        /// que funciono, y la lista es justamente la parte honesta de la traduccion: una
+        /// estrategia de merge que este modelo no tiene, una lista de columnas que ya no
+        /// hace falta, una bandera cuyo significado cambio.
+        /// </summary>
+        private static void ImprimirPerdidas(IReadOnlyList<string> perdidas)
+        {
+            if(perdidas.Count == 0)
+                return;
+
+            AnsiConsole.MarkupLine($"[yellow]Lo que el archivo decía y no cruzó ({perdidas.Count}):[/]");
+
+            foreach(var perdida in perdidas)
+            {
+                AnsiConsole.MarkupLine($"  [yellow]•[/] {Markup.Escape(perdida)}");
+                Log.Warn(perdida, evt: "run.adapt.loss");
+            }
+        }
+
+        private static string Pintar(RunStatus estado) => estado switch
+        {
+            RunStatus.Succeeded => "[green]OK[/]",
+            RunStatus.Skipped => "[yellow]Omitido[/]",
+            RunStatus.Failed => "[red]Falló[/]",
+            _ => Markup.Escape(estado.ToString())
+        };
+
+        /// <summary>
+        /// Invariante y no la del equipo: el mismo numero tiene que leerse igual en el
+        /// log de un servidor en español y en el de uno en inglés.
+        /// </summary>
+        private static string Numero(long valor) => valor.ToString("N0", CultureInfo.InvariantCulture);
+
+        public sealed class ValidateCommand : AsyncCommand<ValidateSettings>
+        {
+            public override async Task<int> ExecuteAsync(CommandContext context, ValidateSettings settings)
             {
                 ShowHeader();
                 InitLogging(settings);
@@ -764,7 +895,7 @@ namespace SyncJob
                     }
                     var cfg = LoadConfig(settings.ConfigPath, settings.Section);
                     ApplyOverrides(cfg, settings);
-                    ValidateConfig(cfg, settings.Direct);
+                    ValidateConfig(cfg);
                     ShowConfigSummary(cfg);
 
                     AnsiConsole.Status()
@@ -773,28 +904,18 @@ namespace SyncJob
                             ctx =>
                             {
                                 TestConnectivity(cfg);
-                                var sourceCols = ReadSourceSchema(cfg);
-                                _ = BuildDestToSourceIndex(cfg, sourceCols);
-                                if(settings.Direct)
-                                    _ = GetFinalSchema(cfg);
-                                else
-                                    _ = GetStageSchema(cfg);
+                                _ = ReadSourceSchema(cfg);
+
+                                // Siempre el destino y nunca la stage. El motor crea la
+                                // stage con la forma de esta tabla en cada corrida, asi
+                                // que leer una stage hecha a mano no comprobaba lo que
+                                // se va a usar y rechazaba secciones que corren.
+                                _ = GetFinalSchema(cfg);
                             });
 
-                    // Probe TOP N del origen para validar permisos y tiempo
-                    int probeN = Math.Max(1, settings.ProbeTop ?? 1);
-                    var probeRes = ProbeSourceTopN(cfg, probeN, 30);
-                    AnsiConsole.MarkupLine($"Probe origen TOP {probeN}: [bold]{probeRes.rows}[/] filas en [bold]{probeRes.elapsedMs} ms[/]");
-                    if (probeRes.elapsedMs > 2000)
-                    {
-                        AnsiConsole.MarkupLine("[yellow]Aviso:[/] El SELECT TOP es más lento de lo esperado (>2s). Considera:");
-                        AnsiConsole.MarkupLine("- Revisar índices en columnas de filtros/joins de la vista/consulta origen.");
-                        AnsiConsole.MarkupLine("- Probar con --top para pruebas y/o particionar por rangos de fecha/ID.");
-                    }
+                    Probar(cfg, settings);
 
-                    AnsiConsole.MarkupLine("[green]Validación OK[/]");
-                    Log.Info("Validate OK", evt: "validate.ok");
-                    return 0;
+                    return await ValidarComoLoVeElMotor(cfg, settings);
                 } catch(Exception ex)
                 {
                     AnsiConsole.WriteException(
@@ -808,6 +929,77 @@ namespace SyncJob
                 }
             }
         }
+
+        /// <summary>
+        /// La seccion tal como la va a ver el motor: se traduce al modelo y se le pasa
+        /// el validador del Core, que es el mismo que va a correr antes de abrir una
+        /// sola conexion cuando llegue el run.
+        ///
+        /// Reemplaza a la comprobacion que hacia BuildDestToSourceIndex, que verificaba
+        /// que cada ColumnMapping nombrara una columna existente en el SELECT. Esa
+        /// comprobacion ya no describe lo que pasa: el motor descubre las columnas del
+        /// destino y las empareja por nombre, y lo que hay que validar ahora es el
+        /// trabajo - una seccion con consulta y procedimiento a la vez, un merge sin
+        /// clave, dos columnas de sincronizacion - que es justo lo que este validador
+        /// mira. Y de paso se ven las perdidas de la traduccion antes de correr nada,
+        /// que es donde sirven.
+        /// </summary>
+        private static async Task<int> ValidarComoLoVeElMotor(SyncConfig cfg, ValidateSettings settings)
+        {
+            var (job, perdidas) = await CoreAdapter.JobAsync(
+                settings.Section,
+                LeerSeccionCruda(settings.ConfigPath, settings.Section),
+                cfg,
+                ComoRunSettings(settings),
+                CancellationToken.None);
+
+            ImprimirPerdidas(perdidas);
+
+            var problemas = JobValidator.Validate(job);
+            foreach(var problema in problemas)
+            {
+                string color = problema.Severity == ValidationSeverity.Error ? "red" : "yellow";
+                AnsiConsole.MarkupLine($"[{color}]{problema.Severity}[/] {Markup.Escape(problema.Message)}");
+            }
+
+            int errores = problemas.Count(x => x.Severity == ValidationSeverity.Error);
+            if(errores > 0)
+            {
+                AnsiConsole.MarkupLine(
+                    $"[red]✗[/] La sección no correría: {errores} error(es). El run se detiene en el mismo punto.");
+                Log.Error($"Validate failed: {errores} model error(s)", evt: "validate.model.error");
+                return 1;
+            }
+
+            AnsiConsole.MarkupLine("[green]Validación OK[/]");
+            Log.Info("Validate OK", evt: "validate.ok");
+            return 0;
+        }
+
+        /// <summary>
+        /// <c>validate</c> no tiene las banderas de <c>run</c>, pero el adaptador pide un
+        /// RunSettings porque son esas banderas las que cambian el trabajo. Se traducen
+        /// las que <c>validate</c> si acepta - <c>--sp</c>, <c>--sp-param</c>,
+        /// <c>--top</c>, <c>--min-commit</c>, <c>--batch-size</c>, <c>--maxdop</c>,
+        /// <c>--direct</c> - para que valide exactamente el trabajo que se va a correr
+        /// con esa misma linea de comandos.
+        /// </summary>
+        private static RunSettings ComoRunSettings(ValidateSettings settings) => new()
+        {
+            ConfigPath = settings.ConfigPath,
+            Section = settings.Section,
+            MaxDop = settings.MaxDop,
+            BatchSize = settings.BatchSize,
+            Top = settings.Top,
+            ProbeTop = settings.ProbeTop,
+            MinCommit = settings.MinCommit,
+            StoredProcedure = settings.StoredProcedure,
+            SpParams = settings.SpParams,
+            TrustServerCertificate = settings.TrustServerCertificate,
+            NoEncrypt = settings.NoEncrypt,
+            HostNameInCertificate = settings.HostNameInCertificate,
+            Direct = settings.Direct
+        };
 
         public sealed class InitCommand : Command<InitSettings>
         {
@@ -889,46 +1081,6 @@ namespace SyncJob
                 AnsiConsole.MarkupLine("[yellow]Aviso:[/] MaxDOP > 4 puede saturar el destino.");
         }
 
-        // Heurística simple para detectar el primer objeto tras FROM en el SELECT origen
-        static string? TryDetectBaseObjectName(string? sql)
-        {
-            if (string.IsNullOrWhiteSpace(sql)) return null;
-            var text = System.Text.RegularExpressions.Regex.Replace(sql, @"\s+", " ").Trim();
-            var m = System.Text.RegularExpressions.Regex.Match(text, @"\bFROM\s+([\[\]A-Za-z0-9_\.]+)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-            if (!m.Success || m.Groups.Count < 2) return null;
-            var obj = m.Groups[1].Value;
-            var parts = obj.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-            return parts.Length > 0 ? parts[0] : null;
-        }
-
-        // Obtiene tipo del objeto (tabla/vista/sinónimo) si existe en la BD actual
-        static string? ResolveObjectType(SqlConnection conn, string twoPartName)
-        {
-            using var cmd = new SqlCommand(@"
-                DECLARE @obj sysname = @p;
-                DECLARE @schema sysname = PARSENAME(@obj, 2);
-                DECLARE @name   sysname = PARSENAME(@obj, 1);
-                IF OBJECT_ID(@obj, 'U') IS NOT NULL SELECT 'USER_TABLE' AS t;
-                ELSE IF OBJECT_ID(@obj, 'V') IS NOT NULL SELECT 'VIEW' AS t;
-                ELSE IF EXISTS (
-                    SELECT 1 FROM sys.synonyms s
-                    WHERE s.name = ISNULL(@name, @obj)
-                      AND SCHEMA_NAME(s.schema_id) = ISNULL(@schema, SCHEMA_NAME())
-                ) SELECT 'SYNONYM' AS t;
-                ELSE SELECT NULL AS t;", conn);
-            cmd.Parameters.AddWithValue("@p", twoPartName);
-            var res = cmd.ExecuteScalar();
-            return res == DBNull.Value || res == null ? null : Convert.ToString(res);
-        }
-
-        // Cuenta filas de una tabla/vista (opcionalmente dentro de una transacción)
-        static int GetRowCount(SqlConnection conn, string tableOrView, SqlTransaction? tran = null)
-        {
-            using var cmd = new SqlCommand($"SELECT COUNT(*) FROM {tableOrView};", conn, tran);
-            var o = cmd.ExecuteScalar();
-            return (o == null || o == DBNull.Value) ? 0 : Convert.ToInt32(o);
-        }
-
         static void PrintExamples()
         {
             var eg = new Grid();
@@ -948,8 +1100,8 @@ namespace SyncJob
             eg.AddRow("Validar con SP:", "[grey]SyncJob.exe validate -c appsettings.json -s ClienteSync --sp dbo.SP_ObtenerClientes --sp-param FechaDesde=2025-01-01[/]");
             // Append / Direct
             eg.AddRow("Append a Final (sin truncar):", "[grey]SyncJob.exe run -c appsettings.json -s ClienteSync --append[/]");
-            eg.AddRow("Directo a Final + append (SP):", "[grey]SyncJob.exe run -c appsettings.json -s ClienteSync --sp dbo.SP_ObtenerClientes --direct --append --min-commit 0[/]");
-            eg.AddRow("Stage + sin commit (SP):", "[grey]SyncJob.exe run -c appsettings.json -s ClienteSync --sp dbo.SP_ObtenerClientes --skip-commit[/]");
+            eg.AddRow("Append a Final desde un SP:", "[grey]SyncJob.exe run -c appsettings.json -s ClienteSync --sp dbo.SP_ObtenerClientes --append --min-commit 0[/]");
+            eg.AddRow("No publicar si el origen viene corto:", "[grey]SyncJob.exe run -c appsettings.json -s ClienteSync --min-commit 1000 --skip-commit[/]");
             eg.AddRow(
                 "Confiar en certificado del servidor (dev):",
                 "[grey]SyncJob.exe run -c appsettings.json --trust-server-cert[/]");
@@ -1188,9 +1340,22 @@ namespace SyncJob
         static SyncConfig LoadConfig(string path, string section)
         {
             var json = File.ReadAllText(path);
+
+            // El convertidor de enums por nombre no es un lujo: Incremental.Mode,
+            // Incremental.MergeStrategy y DeleteDetection.Mode son enums, y sin el una
+            // seccion escrita como la documenta INCREMENTAL_SYNC.md - "Mode":
+            // "Timestamp" - no se podia cargar. Reventaba con una JsonException cruda
+            // antes de llegar a validar nada, asi que el bloque incremental que el
+            // archivo describe no habia forma de correrlo desde el JSON. Los numeros
+            // siguen entrando igual, de modo que ningun archivo que hoy funcione deja
+            // de hacerlo.
             var root = JsonSerializer.Deserialize<Dictionary<string, SyncConfig>>(
                 json,
-                new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+                new JsonSerializerOptions
+                {
+                    PropertyNameCaseInsensitive = true,
+                    Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() }
+                });
             if(root == null || !root.TryGetValue(section, out var cfg) || cfg == null)
                 throw new Exception($"No se encontró la sección '{section}' en {path}");
 
@@ -1370,7 +1535,14 @@ namespace SyncJob
                 $"[cyan]→[/] ColumnMappings deducidos del origen: [bold]{columnas.Count}[/] columnas");
         }
 
-        static void ValidateConfig(SyncConfig cfg, bool directMode = false)
+        /// <summary>
+        /// Lo que el archivo tiene que decir para que la seccion pueda correr.
+        ///
+        /// Ya no recibe el modo directo: <c>--direct</c> no cambia nada de esto desde
+        /// que el motor siempre pasa por una tabla de stage. Lo que el modo directo
+        /// evitaba - tener que declarar la stage - ahora vale para todos.
+        /// </summary>
+        static void ValidateConfig(SyncConfig cfg)
         {
             if(cfg.Source == null)
                 throw new ArgumentException("Missing Source config.");
@@ -1395,16 +1567,21 @@ namespace SyncJob
                 throw new ArgumentException("Destination.ConnectionString vacío.");
             if(string.IsNullOrWhiteSpace(cfg.Destination.FinalTable))
                 throw new ArgumentException("Destination.FinalTable vacío.");
-            if(!directMode)
-            {
-                if(string.IsNullOrWhiteSpace(cfg.Destination.StageTable))
-                    throw new ArgumentException("Destination.StageTable vacío.");
-                if(string.Equals(
+            // Destination.StageTable dejo de ser obligatoria: el motor crea la tabla de
+            // stage con la forma del destino en cada corrida y la borra despues, asi que
+            // una seccion que no la nombra corre igual. Exigirla era exigir el problema:
+            // una stage mantenida a mano se separa del destino el dia que alguien agrega
+            // una columna de un solo lado, y la publicacion entra corrida.
+            //
+            // Lo que si sigue siendo un error es que sea la MISMA que Final. El motor
+            // borra y vuelve a crear la tabla de stage antes de copiar, de modo que
+            // apuntarla al destino es borrar el destino.
+            if(!string.IsNullOrWhiteSpace(cfg.Destination.StageTable) &&
+                string.Equals(
                     cfg.Destination.StageTable,
                     cfg.Destination.FinalTable,
                     StringComparison.OrdinalIgnoreCase))
-                    throw new ArgumentException("Destination.StageTable y Destination.FinalTable no pueden ser iguales.");
-            }
+                throw new ArgumentException("Destination.StageTable y Destination.FinalTable no pueden ser iguales.");
 
             if(cfg.Options.BatchSize <= 0)
                 throw new ArgumentException("Options.BatchSize debe ser > 0.");
@@ -1412,76 +1589,6 @@ namespace SyncJob
                 throw new ArgumentException("Options.MaxDegreeOfParallelism debe ser > 0.");
             if(cfg.Options.MinRowThresholdToCommit < 0)
                 throw new ArgumentException("Options.MinRowThresholdToCommit no puede ser negativo.");
-        }
-
-        static SourceDataPackage ReadSourceData(SyncConfig cfg)
-        {
-            if(cfg.Source == null)
-                throw new ArgumentNullException(nameof(cfg.Source), "Falta la configuración de Source.");
-            if(string.IsNullOrWhiteSpace(cfg.Source.ConnectionString))
-                throw new ArgumentException("Source.ConnectionString vacío.");
-            if(string.IsNullOrWhiteSpace(cfg.Source.Query) && string.IsNullOrWhiteSpace(cfg.Source.StoredProcedure))
-                throw new ArgumentException("Source.Query o Source.StoredProcedure vacío.");
-
-            var package = new SourceDataPackage { Rows = new List<object[]>(capacity: 200000) };
-
-            using var sourceConn = new SqlConnection(cfg.Source.ConnectionString);
-            sourceConn.Open();
-            try
-            {
-                var csb = new SqlConnectionStringBuilder(cfg.Source.ConnectionString);
-                Log.Info($"Conexion origen OK: {csb.DataSource} / {csb.InitialCatalog}", evt: "source.connect.ok");
-            }
-            catch { }
-
-            // Reporte de origen: Query (intenta detectar objeto base) o SP
-            if(!string.IsNullOrWhiteSpace(cfg.Source.Query))
-            {
-                var baseObj = TryDetectBaseObjectName(cfg.Source.Query);
-                if (!string.IsNullOrWhiteSpace(baseObj))
-                {
-                    try
-                    {
-                        var t = ResolveObjectType(sourceConn, baseObj!);
-                        if (!string.IsNullOrWhiteSpace(t))
-                            Log.Info($"Objeto origen: {baseObj} ({t})", evt: "source.baseobject");
-                        else
-                            Log.Warn($"Objeto origen no encontrado: {baseObj}", evt: "source.baseobject.missing");
-                    }
-                    catch { }
-                }
-                else
-                {
-                    Log.Debug("No se pudo detectar objeto base del SELECT", evt: "source.baseobject.unknown");
-                }
-            }
-            else if(!string.IsNullOrWhiteSpace(cfg.Source.StoredProcedure))
-            {
-                Log.Info($"Stored Procedure origen: {cfg.Source.StoredProcedure}", evt: "source.sp");
-            }
-
-            using var cmd = !string.IsNullOrWhiteSpace(cfg.Source.Query)
-                ? new SqlCommand(cfg.Source.Query, sourceConn) { CommandType = CommandType.Text }
-                : new SqlCommand(cfg.Source.StoredProcedure!, sourceConn) { CommandType = CommandType.StoredProcedure };
-            if(cmd.CommandType == CommandType.StoredProcedure)
-                AddStoredProcParams(cmd, cfg.Source.Parameters);
-            using var reader = cmd.ExecuteReader(CommandBehavior.SequentialAccess);
-
-            int fieldCount = reader.FieldCount;
-            var colNames = new string[fieldCount];
-            for(int i = 0; i < fieldCount; i++)
-                colNames[i] = reader.GetName(i);
-            package.SourceColumnNames = colNames;
-            Log.Info($"Esquema origen OK: {fieldCount} columnas", evt: "source.schema.ok");
-
-            while(reader.Read())
-            {
-                var values = new object[fieldCount];
-                reader.GetValues(values);
-                package.Rows.Add(values);
-            }
-
-            return package;
         }
 
         // Solo nombres de columnas del origen sin cargar filas
@@ -1537,7 +1644,7 @@ namespace SyncJob
         }
 
         // Helper: parsea lista NAME=VALUE a diccionario
-        static Dictionary<string, string> ParseNameValuePairs(IEnumerable<string> pairs)
+        internal static Dictionary<string, string> ParseNameValuePairs(IEnumerable<string> pairs)
         {
             var dict = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             if (pairs == null) return dict;
@@ -1557,200 +1664,6 @@ namespace SyncJob
                 }
             }
             return dict;
-        }
-
-        internal static void LoadStageInParallel(SyncConfig cfg, SourceDataPackage data)
-        {
-            if(cfg.Destination == null)
-                throw new ArgumentNullException(nameof(cfg.Destination));
-            if(cfg.Options == null)
-                throw new ArgumentNullException(nameof(cfg.Options));
-            if(cfg.ColumnMappings == null || cfg.ColumnMappings.Count == 0)
-                throw new ArgumentException("ColumnMappings vacío. Es obligatorio.");
-
-            using(var destConn = new SqlConnection(cfg.Destination.ConnectionString))
-            {
-                destConn.Open();
-                try
-                {
-                    var cdb = new SqlConnectionStringBuilder(cfg.Destination.ConnectionString);
-                    Log.Info($"Conexion destino OK: {cdb.DataSource} / {cdb.InitialCatalog}", evt: "dest.connect.ok");
-                }
-                catch { }
-
-                // Verificar Stage existe
-                try
-                {
-                    var t = ResolveObjectType(destConn, cfg.Destination.StageTable!);
-                    if (!string.IsNullOrWhiteSpace(t))
-                        Log.Info($"Stage encontrado: {cfg.Destination.StageTable} ({t})", evt: "dest.stage.exists");
-                    else
-                        Log.Warn($"Stage no encontrado: {cfg.Destination.StageTable}", evt: "dest.stage.missing");
-                }
-                catch { }
-
-                // Conteo antes de TRUNCATE Stage
-                try
-                {
-                    int stageBefore = GetRowCount(destConn, cfg.Destination.StageTable!);
-                    Log.Info($"Stage antes de TRUNCATE: {stageBefore}", evt: "dest.stage.count.before_truncate");
-                }
-                catch { }
-
-                using var cmdTrunc = new SqlCommand($"TRUNCATE TABLE {cfg.Destination.StageTable};", destConn);
-                cmdTrunc.ExecuteNonQuery();
-                Log.Info("TRUNCATE Stage completado", evt: "dest.stage.truncate.done");
-            }
-
-            var stageSchema = GetStageSchema(cfg);
-            var destToSourceIndex = BuildDestToSourceIndex(cfg, data.SourceColumnNames);
-
-            var batches = SplitIntoBatches(data.Rows, cfg.Options.BatchSize);
-
-            var bulkOptions = cfg.Options.KeepIdentity
-                ? SqlBulkCopyOptions.KeepIdentity | SqlBulkCopyOptions.TableLock
-                : SqlBulkCopyOptions.TableLock;
-
-            Parallel.ForEach(
-                batches,
-                new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, cfg.Options.MaxDegreeOfParallelism) },
-                batch =>
-                {
-                    using var destConn = new SqlConnection(cfg.Destination.ConnectionString);
-                    destConn.Open();
-
-                    var dt = BuildDataTableForBatch(stageSchema, destToSourceIndex, batch);
-
-                    using var bulk = new SqlBulkCopy(destConn, bulkOptions, null)
-                    {
-                        DestinationTableName = cfg.Destination.StageTable,
-                        BulkCopyTimeout = cfg.Options.BulkCopyTimeoutSeconds,
-                        BatchSize = cfg.Options.BatchSize
-                    };
-
-                    foreach(var map in cfg.ColumnMappings)
-                    {
-                        if(!string.IsNullOrWhiteSpace(map.Dest))
-                            bulk.ColumnMappings.Add(map.Dest, map.Dest);
-                    }
-
-                    bulk.WriteToServer(dt);
-                });
-        }
-
-        static IEnumerable<List<object[]>> SplitIntoBatches(List<object[]> allRows, int batchSize)
-        {
-            if(batchSize <= 0)
-                throw new ArgumentOutOfRangeException(nameof(batchSize));
-            for(int i = 0; i < allRows.Count; i += batchSize)
-                yield return allRows.GetRange(i, Math.Min(batchSize, allRows.Count - i));
-        }
-
-        static DataTable GetStageSchema(SyncConfig cfg)
-        {
-            using var destConn = new SqlConnection(cfg.Destination!.ConnectionString);
-            destConn.Open();
-            using var schemaCmd = new SqlCommand($"SELECT TOP 0 * FROM {cfg.Destination.StageTable};", destConn);
-            using var schemaAdapter = new SqlDataAdapter(schemaCmd);
-            var dt = new DataTable();
-            schemaAdapter.Fill(dt);
-            Log.Info($"Esquema Stage OK: {dt.Columns.Count} columnas", evt: "dest.stage.schema.ok");
-            return dt;
-        }
-
-        internal static void LoadFinalDirect(SyncConfig cfg, SourceDataPackage data, bool append)
-        {
-            if(cfg.Destination == null)
-                throw new ArgumentNullException(nameof(cfg.Destination));
-            if(cfg.Options == null)
-                throw new ArgumentNullException(nameof(cfg.Options));
-            if(cfg.ColumnMappings == null || cfg.ColumnMappings.Count == 0)
-                throw new ArgumentException("ColumnMappings vacío. Es obligatorio.");
-
-            using(var destConn = new SqlConnection(cfg.Destination.ConnectionString))
-            {
-                destConn.Open();
-                try
-                {
-                    var cdb = new SqlConnectionStringBuilder(cfg.Destination.ConnectionString);
-                    Log.Info($"Conexion destino OK: {cdb.DataSource} / {cdb.InitialCatalog}", evt: "dest.connect.ok");
-                }
-                catch { }
-
-                // Verificar Final existe
-                try
-                {
-                    var t = ResolveObjectType(destConn, cfg.Destination.FinalTable!);
-                    if (!string.IsNullOrWhiteSpace(t))
-                        Log.Info($"Final encontrado: {cfg.Destination.FinalTable} ({t})", evt: "dest.final.exists");
-                    else
-                        Log.Warn($"Final no encontrado: {cfg.Destination.FinalTable}", evt: "dest.final.missing");
-                }
-                catch { }
-
-                // Conteo antes de operación en Final
-                try
-                {
-                    int finalBefore = GetRowCount(destConn, cfg.Destination.FinalTable!);
-                    if(append)
-                        Log.Info($"Final antes de APPEND: {finalBefore}", evt: "dest.final.count.before_append");
-                    else
-                        Log.Info($"Final antes de TRUNCATE: {finalBefore}", evt: "dest.final.count.before_truncate");
-                }
-                catch { }
-
-                if(!append)
-                {
-                    using var cmdTrunc = new SqlCommand($"TRUNCATE TABLE {cfg.Destination.FinalTable};", destConn);
-                    cmdTrunc.ExecuteNonQuery();
-                    Log.Info("TRUNCATE Final completado", evt: "dest.final.truncate.done");
-                }
-            }
-
-            var finalSchema = GetFinalSchema(cfg);
-            var destToSourceIndex = BuildDestToSourceIndex(cfg, data.SourceColumnNames);
-
-            var batches = SplitIntoBatches(data.Rows, cfg.Options.BatchSize);
-
-            var bulkOptions = cfg.Options.KeepIdentity
-                ? SqlBulkCopyOptions.KeepIdentity | SqlBulkCopyOptions.TableLock
-                : SqlBulkCopyOptions.TableLock;
-
-            Parallel.ForEach(
-                batches,
-                new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, cfg.Options.MaxDegreeOfParallelism) },
-                batch =>
-                {
-                    using var destConn = new SqlConnection(cfg.Destination.ConnectionString);
-                    destConn.Open();
-
-                    var dt = BuildDataTableForBatch(finalSchema, destToSourceIndex, batch);
-
-                    using var bulk = new SqlBulkCopy(destConn, bulkOptions, null)
-                    {
-                        DestinationTableName = cfg.Destination.FinalTable,
-                        BulkCopyTimeout = cfg.Options.BulkCopyTimeoutSeconds,
-                        BatchSize = cfg.Options.BatchSize
-                    };
-
-                    foreach(var map in cfg.ColumnMappings)
-                    {
-                        if(!string.IsNullOrWhiteSpace(map.Dest))
-                            bulk.ColumnMappings.Add(map.Dest, map.Dest);
-                    }
-
-                    bulk.WriteToServer(dt);
-                });
-
-            // Conteo post-carga
-            try
-            {
-                using var destConn = new SqlConnection(cfg.Destination.ConnectionString);
-                destConn.Open();
-                int finalAfter = GetRowCount(destConn, cfg.Destination.FinalTable!);
-                Log.Info($"Final despues de carga directa{(append ? " (append)" : string.Empty)}: {finalAfter}", evt: "dest.final.count.after_direct");
-            }
-            catch { }
         }
 
         static DataTable GetFinalSchema(SyncConfig cfg)
@@ -1786,288 +1699,6 @@ namespace SyncJob
                     Log.Info($"Conexion destino OK: {cdb.DataSource} / {cdb.InitialCatalog}", evt: "dest.connect.ok");
                 }
                 catch { }
-            }
-        }
-
-        static Dictionary<string, int> BuildDestToSourceIndex(SyncConfig cfg, string[] sourceColumnNames)
-        {
-            var map = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-            foreach(var m in cfg.ColumnMappings!)
-            {
-                if(string.IsNullOrWhiteSpace(m.Source) || string.IsNullOrWhiteSpace(m.Dest))
-                    throw new ArgumentException("ColumnMappings contiene entradas vacías.");
-
-                int idx = Array.FindIndex(
-                    sourceColumnNames,
-                    c => c.Equals(m.Source, StringComparison.OrdinalIgnoreCase));
-                if(idx == -1)
-                    throw new Exception($"Columna origen '{m.Source}' no existe en el SELECT.");
-
-                map[m.Dest] = idx;
-            }
-            return map;
-        }
-
-        static DataTable BuildDataTableForBatch(
-            DataTable stageSchema,
-            Dictionary<string, int> destColToSourceIndex,
-            List<object[]> batchRows)
-        {
-            var dt = stageSchema.Clone();
-            dt.BeginLoadData();
-            foreach(var rowValues in batchRows)
-            {
-                var newRow = dt.NewRow();
-                foreach(DataColumn destCol in dt.Columns)
-                {
-                    if(destColToSourceIndex.TryGetValue(destCol.ColumnName, out int srcIdx))
-                    {
-                        var val = rowValues[srcIdx];
-                        newRow[destCol.ColumnName] = val ?? DBNull.Value;
-                    }
-                }
-                dt.Rows.Add(newRow);
-            }
-            dt.EndLoadData();
-            return dt;
-        }
-
-        /// <summary>
-        /// Decide si se puede commitear segun MinRowThresholdToCommit.
-        ///
-        /// Vive aqui, y no dentro de cada comando, porque antes estaba escrito
-        /// SOLO en la ruta del JSON: el camino run-db (el que usa el Windows
-        /// Service) llamaba directo al commit y el umbral nunca se evaluaba.
-        /// Un origen roto devolviendo 3 filas truncaba la tabla final y dejaba
-        /// 3. El seguro estaba configurado, se mostraba en pantalla y no hacia
-        /// nada, que es peor que no tenerlo porque uno confia.
-        /// </summary>
-        /// <returns>true si hay que commitear, false si se omite el commit.</returns>
-        internal static bool PuedeCommitear(SyncConfig cfg, int filas, bool forzar, bool omitir)
-        {
-            int minimo = cfg.Options?.MinRowThresholdToCommit ?? 0;
-            if(filas >= minimo) return true;
-
-            if(forzar)
-            {
-                Log.Warn($"Forcing commit with rows={filas} < min={minimo}", evt: "run.commit.force");
-                return true;
-            }
-
-            if(omitir)
-            {
-                Log.Warn($"Skipping commit with rows={filas} < min={minimo}", evt: "run.commit.skip");
-                return false;
-            }
-
-            Log.Warn($"Abort: rows={filas} < min={minimo}", evt: "run.abort.min");
-            throw new Exception(
-                $"Filas ({filas}) < MinRowThresholdToCommit ({minimo}). Abortado.");
-        }
-
-        /// <summary>
-        /// Lista explicita de columnas del destino, tomada de los ColumnMappings.
-        ///
-        /// Antes el swap era "INSERT INTO final SELECT * FROM stage", sin lista.
-        /// Mientras las dos tablas se generen juntas eso funciona, pero el dia
-        /// que alguien agregue una columna a una sola de las dos, los datos
-        /// entran CORRIDOS y en silencio: SQL Server no se queja mientras los
-        /// tipos sean compatibles. Con la lista explicita, el mismo caso falla
-        /// de inmediato y con nombre y apellido.
-        /// </summary>
-        internal static string ListaColumnasDestino(SyncConfig cfg)
-        {
-            if(cfg.ColumnMappings == null || cfg.ColumnMappings.Count == 0)
-                throw new ArgumentException("ColumnMappings vacío. Es obligatorio.");
-
-            return string.Join(", ", cfg.ColumnMappings
-                .Where(m => !string.IsNullOrWhiteSpace(m.Dest))
-                .Select(m => "[" + m.Dest!.Replace("]", "]]") + "]"));
-        }
-
-        /// <summary>
-        /// Parte un nombre de dos partes en esquema y tabla. Sin esquema, dbo.
-        /// </summary>
-        private static (string Esquema, string Objeto) PartirNombre(string nombre)
-        {
-            string limpio = nombre.Replace("[", string.Empty).Replace("]", string.Empty).Trim();
-            int punto = limpio.LastIndexOf('.');
-            return punto < 0
-                ? ("dbo", limpio)
-                : (limpio.Substring(0, punto), limpio.Substring(punto + 1));
-        }
-
-        /// <summary>
-        /// El intercambio de nombres solo sirve si Stage y Final son TABLAS de
-        /// verdad y viven en el mismo esquema (sp_rename no mueve objetos de un
-        /// esquema a otro). Si no se cumple, se usa el camino de siempre.
-        /// </summary>
-        private static bool IntercambioPorNombreDisponible(SyncConfig cfg, SqlConnection conn, SqlTransaction tran)
-        {
-            try
-            {
-                var final = PartirNombre(cfg.Destination!.FinalTable!);
-                var stage = PartirNombre(cfg.Destination.StageTable!);
-
-                if(!string.Equals(final.Esquema, stage.Esquema, StringComparison.OrdinalIgnoreCase))
-                    return false;
-
-                const string sql = @"
-SELECT SUM(CASE WHEN t.name IS NULL THEN 0 ELSE 1 END)
-FROM   (VALUES (@f), (@s)) AS n(nombre)
-LEFT   JOIN sys.tables t
-       ON t.name = n.nombre AND SCHEMA_NAME(t.schema_id) = @e";
-
-                using var cmd = new SqlCommand(sql, conn, tran);
-                cmd.Parameters.AddWithValue("@f", final.Objeto);
-                cmd.Parameters.AddWithValue("@s", stage.Objeto);
-                cmd.Parameters.AddWithValue("@e", final.Esquema);
-                object? r = cmd.ExecuteScalar();
-                return r != null && r != DBNull.Value && Convert.ToInt32(r) == 2;
-            }
-            catch
-            {
-                return false;   // ante la duda, el camino conocido
-            }
-        }
-
-        /// <summary>
-        /// Intercambia Stage y Final por nombre. Los datos nuevos ya estan en
-        /// Stage, asi que despues del intercambio Final los tiene y Stage queda
-        /// con los viejos, listo para que la proxima corrida lo trunque.
-        ///
-        /// sp_rename NO renombra los indices ni las restricciones que cuelgan de
-        /// la tabla, pero eso no importa aqui: las dos tablas se generan con la
-        /// misma forma y lo que se intercambia es a que nombre responde cada una.
-        /// </summary>
-        private static void IntercambiarTablas(SyncConfig cfg, SqlConnection conn, SqlTransaction tran)
-        {
-            var final = PartirNombre(cfg.Destination!.FinalTable!);
-            var stage = PartirNombre(cfg.Destination.StageTable!);
-            string temporal = final.Objeto + "_swap_" + Guid.NewGuid().ToString("N").Substring(0, 8);
-
-            void Renombrar(string desde, string hacia)
-            {
-                using var cmd = new SqlCommand("sp_rename", conn, tran) { CommandType = CommandType.StoredProcedure };
-                cmd.Parameters.AddWithValue("@objname", $"[{final.Esquema}].[{desde}]");
-                cmd.Parameters.AddWithValue("@newname", hacia);
-                cmd.Parameters.AddWithValue("@objtype", "OBJECT");
-                cmd.ExecuteNonQuery();
-            }
-
-            Renombrar(final.Objeto, temporal);      // Final   -> temporal
-            Renombrar(stage.Objeto, final.Objeto);  // Stage   -> Final   (datos nuevos ya publicados)
-            Renombrar(temporal, stage.Objeto);      // temporal-> Stage   (datos viejos, se descartan luego)
-        }
-
-        internal static void CommitStageToFinal(SyncConfig cfg, int rowCount, bool append)
-        {
-            using(var destConn = new SqlConnection(cfg.Destination!.ConnectionString))
-            {
-                destConn.Open();
-                using(var tran = destConn.BeginTransaction())
-                {
-                    try
-                    {
-                        // Final: existencia y conteo previo
-                        try
-                        {
-                            var t = ResolveObjectType(destConn, cfg.Destination.FinalTable!);
-                            if (!string.IsNullOrWhiteSpace(t))
-                                Log.Info($"Final encontrado: {cfg.Destination.FinalTable} ({t})", evt: "dest.final.exists");
-                            else
-                                Log.Warn($"Final no encontrado: {cfg.Destination.FinalTable}", evt: "dest.final.missing");
-                        }
-                        catch { }
-
-                        try
-                        {
-                            int finalBefore = GetRowCount(destConn, cfg.Destination.FinalTable!, tran);
-                            if(append)
-                                Log.Info($"Final antes de APPEND: {finalBefore}", evt: "dest.final.count.before_append");
-                            else
-                                Log.Info($"Final antes de TRUNCATE: {finalBefore}", evt: "dest.final.count.before_truncate");
-                        }
-                        catch { }
-
-                        int stageCount;
-                        using(var cmdCount = new SqlCommand(
-                            $"SELECT COUNT(*) FROM {cfg.Destination.StageTable};",
-                            destConn,
-                            tran))
-                        {
-                            stageCount = (int)cmdCount.ExecuteScalar();
-                        }
-
-                        if(stageCount != rowCount)
-                            throw new Exception(
-                                $"Rowcount mismatch: stage={stageCount} vs leído={rowCount}. Abortando swap.");
-
-                        string columnas = ListaColumnasDestino(cfg);
-
-                        // APPEND siempre copia fila por fila: hay datos previos
-                        // que conservar y no se puede intercambiar la tabla.
-                        //
-                        // REEMPLAZO COMPLETO: antes era TRUNCATE + INSERT dentro
-                        // de la transaccion. TRUNCATE toma un lock de esquema
-                        // (Sch-M) que se mantiene hasta el commit, y contra ese
-                        // lock hasta un lector con NOLOCK se bloquea. Con 122 mil
-                        // filas eso fueron ~15 segundos con el dashboard colgado.
-                        // De noche no se nota; sincronizando varias veces al dia,
-                        // con alguien mirando, si.
-                        //
-                        // Ahora se intercambian los NOMBRES de las tablas: es una
-                        // operacion de metadatos, dura milisegundos, y los datos
-                        // ya estaban escritos en Stage desde antes. De paso queda
-                        // mas seguro: si algo falla, la tabla anterior sigue
-                        // entera y la transaccion la devuelve a su lugar.
-                        if(append)
-                        {
-                            string sqlAppend =
-                                $@"INSERT INTO {cfg.Destination.FinalTable} ({columnas})
-                                   SELECT {columnas} FROM {cfg.Destination.StageTable};";
-                            using(var cmdAppend = new SqlCommand(sqlAppend, destConn, tran))
-                                cmdAppend.ExecuteNonQuery();
-                        }
-                        else if(IntercambioPorNombreDisponible(cfg, destConn, tran))
-                        {
-                            IntercambiarTablas(cfg, destConn, tran);
-                            Log.Info("Swap por intercambio de nombres (sin TRUNCATE)", evt: "dest.swap.rename");
-                        }
-                        else
-                        {
-                            // Camino anterior, para cuando el intercambio no
-                            // aplica (Final es una vista, o esta en otro esquema
-                            // que Stage). Se conserva para no romper nada que ya
-                            // estuviera funcionando asi.
-                            string sqlTruncate =
-                                $@"TRUNCATE TABLE {cfg.Destination.FinalTable};
-                                   INSERT INTO {cfg.Destination.FinalTable} ({columnas})
-                                   SELECT {columnas} FROM {cfg.Destination.StageTable};";
-                            using(var cmdSwap = new SqlCommand(sqlTruncate, destConn, tran))
-                                cmdSwap.ExecuteNonQuery();
-                            Log.Info("Swap por TRUNCATE + INSERT", evt: "dest.swap.truncate");
-                        }
-
-                        tran.Commit();
-
-                        try
-                        {
-                            int finalAfter = GetRowCount(destConn, cfg.Destination.FinalTable!);
-                            Log.Info($"Final despues de commit{(append ? " (append)" : string.Empty)}: {finalAfter}", evt: "dest.final.count.after_commit");
-                        }
-                        catch { }
-                    } catch
-                    {
-                        try
-                        {
-                            tran.Rollback();
-                        } catch
-                        {
-                        }
-                        throw;
-                    }
-                }
             }
         }
     }

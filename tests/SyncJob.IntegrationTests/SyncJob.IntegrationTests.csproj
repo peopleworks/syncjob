@@ -20,6 +20,15 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\SyncJob.Core\SyncJob.Core.csproj" />
+
+    <!-- The three surfaces are surfaces, not the engine: the CLI's own entry point, the
+         Windows service with its SQLite store, and the central command whose job and
+         whose credentials both come out of a catalog the Core cannot reach. All three
+         are driven end to end here - a test that calls anything else is a test of
+         something else - which is why the reference is to SyncJob.Cli and not only to
+         SyncJob.Core. The service path in particular had never had a live test, and that
+         is most of why it still held a bug the CLI fixed in 2.3. -->
+    <ProjectReference Include="..\..\src\SyncJob.Cli\SyncJob.Cli.csproj" />
   </ItemGroup>
 
 </Project>

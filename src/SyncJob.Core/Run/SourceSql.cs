@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Text;
 using SyncJob.Core.Model;
 
@@ -37,6 +37,14 @@ public static class SourceSql
     public const string WatermarkParameter = "@__syncjob_watermark";
 
     /// <summary>
+    /// The variable the engine fills in with the step's boundary, so that SQL the
+    /// operator wrote can name it: <c>${Watermark}</c>, or <c>@Watermark</c> under the
+    /// legacy syntax. Reserved - a step may not declare one of its own by this name, and
+    /// <c>JobValidator</c> refuses it.
+    /// </summary>
+    public const string ReservedWatermarkName = "Watermark";
+
+    /// <summary>
     /// The SELECT - or the procedure name - a step reads, with its variables substituted
     /// and its watermark applied. <paramref name="watermark"/> is null on a first run or
     /// a full read.
@@ -57,6 +65,9 @@ public static class SourceSql
         var plan = step.Incremental is { ForceFullRead: false } incremental ? incremental.Watermark : null;
         var boundary = Boundary(plan, watermark);
 
+        if(plan is not null)
+            variables = WithWatermark(step, variables, boundary);
+
         if(!string.IsNullOrWhiteSpace(step.Source.StoredProcedure))
             return FromProcedure(step, variables, plan, boundary);
 
@@ -69,6 +80,46 @@ public static class SourceSql
         throw new InvalidOperationException(
             $"the step '{Describe(step)}' has no source to read: give it a query, a stored procedure or a table");
     }
+
+    /// <summary>
+    /// The variables the step declared, plus the one the engine supplies.
+    /// <para>
+    /// A query the operator wrote cannot have a predicate appended to it - see
+    /// <see cref="FromQuery"/> - so the boundary has to reach it through a variable. It
+    /// could be one the operator declares, reading the watermark table by hand, and the
+    /// deployed system does exactly that. This is the same thing without the round trip
+    /// and without the operator having to write the job's own id into a string literal:
+    /// the runner has already read the watermark by the time this is called, so
+    /// <c>${Watermark}</c> is simply that value.
+    /// </para>
+    /// </summary>
+    private static IReadOnlyList<ResolvedVariable> WithWatermark(
+        SyncStep step, IReadOnlyList<ResolvedVariable> variables, string? boundary)
+    {
+        if(boundary is null)
+        {
+            // Substituting NULL would turn `col > ${Watermark}` into a predicate that
+            // matches nothing at all, so a first run would read zero rows and report
+            // success - which is the silent-empty-load failure seen from a new angle.
+            // WatermarkPlan.InitialValue exists precisely to say where a first run
+            // starts.
+            if(VariableResolver.Mentions(step.Source.Sql ?? string.Empty, step.VariableSyntax, [Reserved(null)]))
+            {
+                throw new InvalidOperationException(
+                    $"the step '{Describe(step)}' names {ReservedWatermarkName} in its SQL and has no watermark " +
+                    "yet, and its watermark plan sets no InitialValue. There is nothing to compare against, and " +
+                    "substituting NULL would make the predicate match no rows at all and call it a successful " +
+                    "run. Give the plan an InitialValue old enough to mean everything.");
+            }
+
+            return variables;
+        }
+
+        return [Reserved(boundary), .. variables];
+    }
+
+    private static ResolvedVariable Reserved(string? boundary) =>
+        new(ReservedWatermarkName, boundary, CameFromDefault: false);
 
     /// <summary>
     /// The column whose maximum is the step's next watermark, or null when the step

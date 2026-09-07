@@ -1,4 +1,4 @@
-using SyncJob.Core.Import;
+﻿using SyncJob.Core.Import;
 using SyncJob.Core.Model;
 
 namespace SyncJob.Core.Tests;
@@ -197,8 +197,19 @@ public sealed class ImportAppSettingsTests
 
         Assert.Contains(step.FieldMaps, x => x.Source == "IdVenta" && x.IsUniqueKey);
         Assert.Contains(step.FieldMaps, x => x.Source == "FechaModificacion" && x.IsSyncKey);
-        Assert.Equal("dbo.SyncJobTracking", step.Incremental!.Watermark!.StateTable);
+        // The old table's name is NOT carried into StateTable. dbo.SyncJobTracking keys a
+        // whole job by one row, because the engine that made it had no steps; pointing
+        // this store at it gets the section refused. It is remembered, said out loud, and
+        // left alone - it still holds the history of the runs before this one.
+        Assert.Null(step.Incremental!.Watermark!.StateTable);
+        Assert.Equal("dbo.SyncJobTracking", step.Extensions["syncjob.json.incremental.trackingTable"]);
         Assert.False(step.Incremental.ForceFullRead);
+
+        // And the section is runnable, which is the part that matters. A watermark plan
+        // on a query the operator wrote is refused by SourceSql unless the query names a
+        // variable - so the import puts one there.
+        Assert.Contains("${Watermark}", step.Source.Sql!, StringComparison.Ordinal);
+        Assert.Equal("1900-01-01T00:00:00", step.Incremental.Watermark.InitialValue);
     }
 
     /// <summary>

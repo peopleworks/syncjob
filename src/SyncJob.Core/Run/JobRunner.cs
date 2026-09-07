@@ -5,8 +5,14 @@ namespace SyncJob.Core.Run;
 
 /// <summary>
 /// Everything a run needs that is not in the job definition.
+/// <para>
+/// A record rather than a class so that a surface can take options built elsewhere and
+/// change one thing - <c>options with { UseLease = true }</c>. The Windows service does
+/// exactly that to the CLI adapter's defaults, and doing it by hand means copying every
+/// property, which silently stops carrying whichever one is added next.
+/// </para>
 /// </summary>
-public sealed class JobRunOptions
+public sealed record JobRunOptions
 {
     /// <summary>What asked for the run: "schedule", "operator", "service", a test's name.</summary>
     public string TriggeredBy { get; init; } = "unspecified";
@@ -161,7 +167,23 @@ public sealed class JobRunner
                 $"its secret reference, so nothing ran: {e.Message}");
         }
 
-        var lease = await AcquireAsync(job, run, options, destinationConnectionString, cancellationToken).ConfigureAwait(false);
+        RunLease? lease;
+        try
+        {
+            lease = await AcquireAsync(job, run, options, destinationConnectionString, cancellationToken).ConfigureAwait(false);
+        }
+        catch(Exception e) when(e is not OperationCanceledException)
+        {
+            // Taking the lease is the first thing that touches the destination, so an
+            // unreachable server arrives here rather than at a step - and this method
+            // promises not to throw. A surface that catches nothing would otherwise see
+            // a raw SqlException from a run that reported no steps at all.
+            return Refuse(
+                run,
+                RunStatus.Failed,
+                $"the job's lease could not be taken on the destination, so no step ran: {e.Message}");
+        }
+
         if(options.UseLease && !options.DryRun && lease is null)
         {
             return Refuse(

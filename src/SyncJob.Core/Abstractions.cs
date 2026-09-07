@@ -54,6 +54,17 @@ public sealed class CopyRequest
     /// </summary>
     public List<string> ColumnsNotFromSource { get; init; } = new();
 
+    /// <summary>
+    /// The destination this copy's target stands in for, when the target is a staging
+    /// table. Used only in messages.
+    /// <para>
+    /// Without it a mismatch reads "the source does not line up with
+    /// dbo.Person_stg_cb5cc1ae", and an operator has to already know that staging is a
+    /// clone of the destination to know which table to go and look at.
+    /// </para>
+    /// </summary>
+    public string? PublishesInto { get; init; }
+
     public int BatchSize { get; init; }
 
     public int CommandTimeoutSeconds { get; init; }

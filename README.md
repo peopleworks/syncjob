@@ -203,7 +203,7 @@ SyncJob.exe run -c <path> -s <section> [options]
 |--------|-------------|
 | `-c, --config <PATH>` | JSON config file (default: `appsettings.json`) |
 | `-s, --section <NAME>` | Section name inside the JSON |
-| `--direct` | Write directly to Final table, skip Stage |
+| `--direct` | Deprecated. Staging always happens; the flag reports that it did nothing |
 | `--append` | Do not truncate Final table before loading |
 | `--dry-run` | Validate only, do not write any data |
 | `--full-refresh` | Ignore incremental tracking, sync everything |
@@ -260,7 +260,7 @@ Final Table  ←── atomic swap (TRUNCATE + INSERT or Stored Procedure)
 
 If the bulk load to Stage fails partway through, the Final table is never touched. Production reads always see a consistent snapshot.
 
-Use `--direct` to skip Stage and write straight to Final. Faster, but without the atomic safety net.
+`--direct` used to skip Stage and write straight to Final. It no longer does, and the flag says so when you pass it. Staging is not overhead: with nothing staged there is nothing for the row guard to compare against, so a source that comes back empty is only discovered *after* the destination has been emptied. The rows end up in the same table either way — only the order changed.
 
 ---
 
@@ -336,20 +336,22 @@ Enable incremental mode in your JSON config:
 | `AutoDetect` | Uses Change Tracking / CDC events |
 | `Comparison` | PK comparison between source and destination |
 
-SyncJob creates and maintains `dbo.SyncJobTracking` in the destination database:
+SyncJob creates and maintains `dbo.SyncJobWatermark` in the destination database:
 
 ```
-JobIdentifier | LastSyncTime | LastRowVersion | RowsInserted | RowsUpdated | RowsDeleted | Success
+JobId | StepId | Value | PreviousValue | UpdatedAt
 ```
 
-First run: full refresh and saves state. Subsequent runs: reads last state, builds filtered query, syncs only changes.
+First run: reads everything from `InitialValue` and records where it got to. Subsequent runs: read from that mark forward. `PreviousValue` is kept beside it because what an operator actually does when a load goes wrong is re-run from where it was before, and without it that means guessing.
+
+**Upgrading from an earlier version:** the mark used to live in `dbo.SyncJobTracking`, one row per job, because the engine had no steps. That table is left exactly where it is, with its history; the first run after upgrading starts from `InitialValue` and reads everything once. See [INCREMENTAL_SYNC.md](INCREMENTAL_SYNC.md) to carry the old value over instead.
 
 ---
 
 ## SQLite-Based Workflow
 
 ```bash
-# Add connections (passwords encrypted with DPAPI)
+# Add connections (passwords protected with DPAPI, per Windows user)
 SyncJob.exe connection add source --server SQL01 --database SourceDB --username etl --password "secret"
 SyncJob.exe connection add dest   --server SQL02 --database DestDB   --username etl --password "secret"
 
