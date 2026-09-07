@@ -16,9 +16,14 @@ public sealed record TombstoneKeyProblem(long LedgerId, string? KeyValue, int Pa
 }
 
 /// <summary>
-/// Raised when a ledger held keys that could not be applied. Thrown after the well-formed
-/// deletions have been committed, so a malformed row costs the run its green tick and not
-/// the work that was already correct.
+/// A ledger held keys that could not be applied, as an exception.
+/// <para>
+/// The applier does not throw this: it returns the problems in
+/// <see cref="TombstoneResult.Unapplied"/>, because a malformed key is a fact about the
+/// source's data and the deletions that were well formed are still correct. This is here
+/// for the caller that decides an unapplied row is fatal for its own run - it is the one
+/// place that knows - and it carries the same message the applier would have used.
+/// </para>
 /// </summary>
 public sealed class TombstoneKeyFormatException : InvalidOperationException
 {

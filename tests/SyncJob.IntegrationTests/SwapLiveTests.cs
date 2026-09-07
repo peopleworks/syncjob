@@ -358,6 +358,78 @@ public sealed class SwapLiveTests(SqlServerFixture fixture)
         }
     }
 
+    /// <summary>
+    /// A replace stamps its rows too, and this is the one place it can: every row a
+    /// replace writes is new, so there is no update to stamp, and staging is the only
+    /// copy nobody else can see.
+    /// <para>
+    /// It is tested here because the two publishers were written in parallel and the
+    /// stamp only existed on the append and merge side - a step configured with a
+    /// provenance column and published by swap would have carried whatever the source
+    /// happened to hold. Which is also, twice over, what the deployed system does.
+    /// </para>
+    /// </summary>
+    [LiveFact]
+    public async Task AReplace_StampsEveryRowItPublishes()
+    {
+        var connectionString = await fixture.CreateDatabaseAsync();
+        await PublicationFixture.CreateLedgerAsync(connectionString, "dbo.Ledger");
+
+        var staging = await new StagingTableFactory()
+            .CreateAsync(connectionString, "dbo.Ledger", null, CancellationToken.None);
+        await PublicationFixture.LoadAsync(connectionString, staging, rows: 40, firstId: 1);
+
+        // Half the staged rows have no ChangedAt at all, which is what makes the
+        // assertion afterwards mean something.
+        Assert.Equal(20, await ScalarIntAsync(connectionString, $"SELECT COUNT(*) FROM {staging} WHERE ChangedAt IS NULL"));
+
+        var step = Step("dbo.Ledger");
+        step.Provenance = new ProvenanceStamp
+        {
+            Column = "ChangedAt",
+            Kind = ProvenanceValueKind.Expression,
+            Value = "SYSUTCDATETIME()"
+        };
+
+        await new SwapPublisher().PublishAsync(connectionString, staging, step, CancellationToken.None);
+
+        Assert.Equal(40, await ScalarIntAsync(connectionString, "SELECT COUNT(*) FROM dbo.Ledger"));
+        Assert.Equal(0, await ScalarIntAsync(connectionString, "SELECT COUNT(*) FROM dbo.Ledger WHERE ChangedAt IS NULL"));
+    }
+
+    /// <summary>
+    /// A text stamp is a parameter, not concatenated SQL - so a value that is all
+    /// quotes lands as itself rather than as a syntax error or as something worse.
+    /// </summary>
+    [LiveFact]
+    public async Task ATextStamp_TravelsAsAParameter()
+    {
+        var connectionString = await fixture.CreateDatabaseAsync();
+        await PublicationFixture.CreateLedgerAsync(connectionString, "dbo.Ledger");
+
+        var staging = await new StagingTableFactory()
+            .CreateAsync(connectionString, "dbo.Ledger", null, CancellationToken.None);
+        await PublicationFixture.LoadAsync(connectionString, staging, rows: 10, firstId: 1);
+
+        const string awkward = "plant ''; DROP TABLE dbo.Ledger; --";
+        var step = Step("dbo.Ledger");
+        step.Provenance = new ProvenanceStamp
+        {
+            Column = "Name",
+            Kind = ProvenanceValueKind.Text,
+            Value = awkward
+        };
+
+        await new SwapPublisher().PublishAsync(connectionString, staging, step, CancellationToken.None);
+
+        Assert.Equal(10, await ScalarIntAsync(
+            connectionString,
+            $"SELECT COUNT(*) FROM dbo.Ledger WHERE Name = N'{awkward.Replace("'", "''")}'"));
+    }
+
+    private static async Task<int> ScalarIntAsync(string connectionString, string sql) =>
+        Convert.ToInt32(await SqlServerFixture.ScalarAsync(connectionString, sql));
+
     private static SyncStep Step(string destination) => new()
     {
         Id = "swap-live",

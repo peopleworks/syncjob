@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using Microsoft.Data.SqlClient;
 using SqlSchemaDiff.Models;
 using SqlSchemaDiff.Services;
@@ -72,12 +72,44 @@ public sealed class SwapPublisher : IPublisher
         var stagedRows = await PublicationSql.CountAsync(connection, staging, timeout, cancellationToken);
         var replacedRows = await PublicationSql.CountAsync(connection, destination, timeout, cancellationToken);
 
+        // The stamp goes on staging, before either path publishes. Every row a replace
+        // writes is a new row, so there is nothing to distinguish between updated and
+        // inserted, and staging is a table nobody else can see - which is what makes
+        // this the cheap place to do it. The deployed system stamps its own staging
+        // copy too, but after the merge has already read from it, so the value never
+        // reaches the destination at all.
+        await StampStagingAsync(connection, staging, step.Provenance, timeout, cancellationToken);
+
         if(capability.BlockedBecause is null)
             await SwapAsync(connectionString, connection, staging, destination, timeout, cancellationToken);
         else
             await ReplaceInPlaceAsync(connection, staging, destination, capability, step, timeout, cancellationToken);
 
         return new PublishResult(stagedRows, 0, replacedRows);
+    }
+
+    /// <summary>
+    /// Writes the step's provenance value into every staged row. Does nothing when the
+    /// step asks for no stamp.
+    /// </summary>
+    private static async Task StampStagingAsync(
+        SqlConnection connection,
+        SqlObjectName staging,
+        ProvenanceStamp? provenance,
+        int timeout,
+        CancellationToken cancellationToken)
+    {
+        var (stamp, stampValue) = AppendMergeSql.Stamp(provenance);
+        if(stamp is null)
+            return;
+
+        var sql = $"UPDATE {staging.Quoted} SET {AppendMergeSql.Quote(stamp.Column)} = {stamp.ValueSql};";
+
+        await using var command = new SqlCommand(sql, connection) { CommandTimeout = timeout };
+        if(stampValue is not null)
+            command.Parameters.AddWithValue(AppendMergeSql.StampParameter, stampValue);
+
+        await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
     private static async Task SwapAsync(

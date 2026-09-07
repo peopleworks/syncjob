@@ -1,4 +1,4 @@
-using SyncJob.Core.Incremental;
+﻿using SyncJob.Core.Incremental;
 using SyncJob.Core.Model;
 
 namespace SyncJob.IntegrationTests;
@@ -30,10 +30,11 @@ public sealed class TombstoneLiveTests(SqlServerFixture fixture)
             INSERT INTO dbo.Tombstone (KeyValue) VALUES (N'P1;L1;B'), (N'P1;L1;C');
             """);
 
-        var deleted = await new SqlTombstoneApplier().ApplyAsync(
+        var result = await new SqlTombstoneApplier().ApplyAsync(
             source, destination, Step(), Ledger(), CancellationToken.None);
 
-        Assert.Equal(2, deleted);
+        Assert.Equal(2L, result.Deleted);
+        Assert.True(result.IsComplete);
 
         // Which rows, not how many. Two of the four are gone and they are the two named.
         Assert.Equal(["P1|L1|A", "P1|L1|D"], await ReadKeysAsync(destination));
@@ -53,8 +54,8 @@ public sealed class TombstoneLiveTests(SqlServerFixture fixture)
 
         var applier = new SqlTombstoneApplier();
 
-        Assert.Equal(1, await applier.ApplyAsync(source, destination, Step(), Ledger(), CancellationToken.None));
-        Assert.Equal(0, await applier.ApplyAsync(source, destination, Step(), Ledger(), CancellationToken.None));
+        Assert.Equal(1L, (await applier.ApplyAsync(source, destination, Step(), Ledger(), CancellationToken.None)).Deleted);
+        Assert.Equal(0L, (await applier.ApplyAsync(source, destination, Step(), Ledger(), CancellationToken.None)).Deleted);
 
         Assert.Equal(["P1|L1|A", "P1|L1|C", "P1|L1|D"], await ReadKeysAsync(destination));
     }
@@ -76,10 +77,11 @@ public sealed class TombstoneLiveTests(SqlServerFixture fixture)
             INSERT INTO dbo.Tombstone (Plant, Line, Code) VALUES (N'P1', N'L1', N'B'), (N'P1', N'L1', N'D');
             """);
 
-        var deleted = await new SqlTombstoneApplier().ApplyAsync(
+        var result = await new SqlTombstoneApplier().ApplyAsync(
             source, destination, Step(), Ledger(format: TombstoneKeyFormat.Columns), CancellationToken.None);
 
-        Assert.Equal(2, deleted);
+        Assert.Equal(2L, result.Deleted);
+        Assert.True(result.IsComplete);
         Assert.Equal(["P1|L1|A", "P1|L1|C"], await ReadKeysAsync(destination));
     }
 
@@ -99,12 +101,20 @@ public sealed class TombstoneLiveTests(SqlServerFixture fixture)
             INSERT INTO dbo.Tombstone (KeyValue) VALUES (N'P1;L1;B'), (N'P1;L1'), (N'P1;L1;C;EXTRA');
             """);
 
-        var failure = await Assert.ThrowsAsync<TombstoneKeyFormatException>(() =>
-            new SqlTombstoneApplier().ApplyAsync(source, destination, Step(), Ledger(), CancellationToken.None));
+        var reported = await new SqlTombstoneApplier()
+            .ApplyAsync(source, destination, Step(), Ledger(), CancellationToken.None);
 
-        Assert.Equal(2, failure.Problems.Count);
-        Assert.Contains(failure.Problems, x => x.Parts == 2);
-        Assert.Contains(failure.Problems, x => x.Parts == 4);
+        Assert.False(reported.IsComplete);
+        Assert.Equal(2, reported.Unapplied.Count);
+        Assert.Contains(reported.Unapplied, x => x.Parts == 2);
+        Assert.Contains(reported.Unapplied, x => x.Parts == 4);
+
+        // Every unapplied row is named with its ledger id, because the point of reporting
+        // is that someone can go and look at the row.
+        Assert.All(reported.Unapplied, x => Assert.True(x.LedgerId > 0));
+
+        // And the well-formed deletion still happened.
+        Assert.Equal(1L, reported.Deleted);
 
         // The well-formed deletion still happened: a bad row costs the run its green tick,
         // not the work that was correct.
@@ -133,7 +143,7 @@ public sealed class TombstoneLiveTests(SqlServerFixture fixture)
         var applier = new SqlTombstoneApplier();
         var ledger = Ledger(markProcessed: false);
 
-        Assert.Equal(2, await applier.ApplyAsync(source, destination, Step(), ledger, CancellationToken.None));
+        Assert.Equal(2L, (await applier.ApplyAsync(source, destination, Step(), ledger, CancellationToken.None)).Deleted);
 
         // The source was not written to at all.
         Assert.Equal(0, Convert.ToInt32(await SqlServerFixture.ScalarAsync(
@@ -143,12 +153,12 @@ public sealed class TombstoneLiveTests(SqlServerFixture fixture)
             destination, $"SELECT AppliedThroughId FROM {SqlTombstoneApplier.DefaultHighWaterTable};")));
 
         // The same ledger again reads nothing, because the destination knows where it got to.
-        Assert.Equal(0, await applier.ApplyAsync(source, destination, Step(), ledger, CancellationToken.None));
+        Assert.Equal(0L, (await applier.ApplyAsync(source, destination, Step(), ledger, CancellationToken.None)).Deleted);
 
         // And a new deletion after that one is still picked up.
         await SqlServerFixture.ExecuteAsync(source, "INSERT INTO dbo.Tombstone (KeyValue) VALUES (N'P1;L1;D');");
 
-        Assert.Equal(1, await applier.ApplyAsync(source, destination, Step(), ledger, CancellationToken.None));
+        Assert.Equal(1L, (await applier.ApplyAsync(source, destination, Step(), ledger, CancellationToken.None)).Deleted);
         Assert.Equal(["P1|L1|A"], await ReadKeysAsync(destination));
     }
 
@@ -174,7 +184,8 @@ public sealed class TombstoneLiveTests(SqlServerFixture fixture)
             FieldMaps = [new FieldMap { Target = "Id", IsDeleteKey = true }]
         };
 
-        Assert.Equal(2, await new SqlTombstoneApplier().ApplyAsync(source, destination, step, Ledger(), CancellationToken.None));
+        Assert.Equal(2L, (await new SqlTombstoneApplier()
+            .ApplyAsync(source, destination, step, Ledger(), CancellationToken.None)).Deleted);
 
         Assert.Equal("1,3", await SqlServerFixture.ScalarAsync(
             destination, "SELECT STRING_AGG(CAST(Id AS nvarchar(10)), ',') WITHIN GROUP (ORDER BY Id) FROM dbo.Customer;"));

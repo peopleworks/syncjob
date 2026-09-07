@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using Microsoft.Data.SqlClient;
 using SyncJob.Core.Model;
 
@@ -73,13 +73,17 @@ public sealed class SqlTombstoneApplier : ITombstoneApplier
         _highWaterTable = string.IsNullOrWhiteSpace(highWaterTable) ? DefaultHighWaterTable : highWaterTable;
     }
 
-    /// <summary>Rows deleted from the destination.</summary>
-    /// <exception cref="TombstoneKeyFormatException">
-    /// Thrown after the well-formed deletions have been committed, when the ledger held keys
-    /// that do not match the step's delete key. Loud on purpose: the failure being replaced
-    /// is one where nothing is deleted and nothing is said.
-    /// </exception>
-    public async Task<long> ApplyAsync(
+    /// <summary>
+    /// Applies every deletion whose key has the shape the step's delete key implies, and
+    /// returns the rest in <see cref="TombstoneResult.Unapplied"/> rather than throwing.
+    /// <para>
+    /// A malformed key is a fact about the source's data, not a failure of the run, and the
+    /// other deletions are still correct. What must not happen is the deployed behaviour,
+    /// where nothing is deleted and nothing is said - so an unapplied row is always named,
+    /// with its ledger id, and it is the caller's job to put that somewhere a person reads.
+    /// </para>
+    /// </summary>
+    public async Task<TombstoneResult> ApplyAsync(
         string sourceConnectionString,
         string destinationConnectionString,
         SyncStep step,
@@ -131,10 +135,7 @@ public sealed class SqlTombstoneApplier : ITombstoneApplier
         {
             await sourceTransaction.RollbackAsync(cancellationToken);
 
-            if(problems.Count > 0)
-                throw new TombstoneKeyFormatException(problems);
-
-            return 0;
+            return new TombstoneResult(0, problems);
         }
 
         var deleted = await ApplyToDestinationAsync(
@@ -150,10 +151,7 @@ public sealed class SqlTombstoneApplier : ITombstoneApplier
             await sourceTransaction.RollbackAsync(cancellationToken);
         }
 
-        if(problems.Count > 0)
-            throw new TombstoneKeyFormatException(problems);
-
-        return deleted;
+        return new TombstoneResult(deleted, problems);
     }
 
     private async Task<long> ApplyToDestinationAsync(

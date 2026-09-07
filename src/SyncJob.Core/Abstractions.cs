@@ -1,3 +1,4 @@
+﻿using SyncJob.Core.Incremental;
 using SyncJob.Core.Model;
 
 namespace SyncJob.Core;
@@ -141,12 +142,38 @@ public sealed record Watermark(string Value, string? PreviousValue, DateTimeOffs
 /// </summary>
 public interface ITombstoneApplier
 {
-    Task<long> ApplyAsync(
+    /// <summary>
+    /// Applies every well-formed deletion and reports the ones it could not.
+    /// <para>
+    /// A ledger row whose key does not have the shape the step's delete key implies is
+    /// a fact about the source's data, not a failure of the run: the other deletions
+    /// are still correct, and refusing them all would leave the destination further
+    /// from the truth than applying them. So they come back in
+    /// <see cref="TombstoneResult.Unapplied"/> rather than as an exception - a number
+    /// alone had nowhere to put them.
+    /// </para>
+    /// </summary>
+    Task<TombstoneResult> ApplyAsync(
         string sourceConnectionString,
         string destinationConnectionString,
         SyncStep step,
         TombstoneLedger ledger,
         CancellationToken cancellationToken);
+}
+
+/// <summary>
+/// What the applier deleted, and what it would not.
+/// <para>
+/// The deployed implementation cannot report the second half at all: it splits a key
+/// with <c>PARSENAME</c>, which counts parts from the right and stops at five, so a
+/// short key matches nothing, nothing is deleted, and the run reports success.
+/// </para>
+/// </summary>
+/// <param name="Deleted">Rows removed from the destination.</param>
+/// <param name="Unapplied">Ledger rows whose key could not be used, each with its id.</param>
+public sealed record TombstoneResult(long Deleted, IReadOnlyList<TombstoneKeyProblem> Unapplied)
+{
+    public bool IsComplete => Unapplied.Count == 0;
 }
 
 /// <summary>
