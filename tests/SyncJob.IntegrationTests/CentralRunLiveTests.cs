@@ -1,4 +1,4 @@
-using Microsoft.Data.Sqlite;
+﻿using Microsoft.Data.Sqlite;
 using SyncJob.Commands;
 using SyncJob.Database;
 
@@ -42,7 +42,7 @@ public sealed class CentralRunLiveTests(SqlServerFixture fixture)
     /// fails.
     /// </para>
     /// </summary>
-    [LiveFact]
+    [WindowsLiveFact]
     public async Task AConfigurationFromTheCatalogRunsEndToEndAndRecordsTheRealNumbers()
     {
         var (source, destination) = await fixture.CreatePairAsync();
@@ -101,7 +101,7 @@ public sealed class CentralRunLiveTests(SqlServerFixture fixture)
     /// run exits one - which is what <c>PuedeCommitear</c>'s throw did.
     /// </para>
     /// </summary>
-    [LiveFact]
+    [WindowsLiveFact]
     public async Task ASourceThatReturnsNothingLeavesTheDestinationExactlyAsItWas()
     {
         var (source, destination) = await fixture.CreatePairAsync();
@@ -143,7 +143,7 @@ public sealed class CentralRunLiveTests(SqlServerFixture fixture)
     /// that is what the old early return gave it.
     /// </para>
     /// </summary>
-    [LiveFact]
+    [WindowsLiveFact]
     public async Task AnEmptySourceWithNoFloorConfiguredIsASkipAndNotASuccess()
     {
         var (source, destination) = await fixture.CreatePairAsync();
@@ -180,7 +180,7 @@ public sealed class CentralRunLiveTests(SqlServerFixture fixture)
     /// calls and never logs.
     /// </para>
     /// </summary>
-    [Fact]
+    [WindowsFact]
     public async Task TheStoredCredentialNeverReachesTheModel()
     {
         using var catalog = new Catalog();

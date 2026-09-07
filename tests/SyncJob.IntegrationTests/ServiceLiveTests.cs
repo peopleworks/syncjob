@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Logging;
 using SyncJob.Core.Model;
@@ -49,7 +49,7 @@ public sealed class ServiceLiveTests(SqlServerFixture fixture) : IDisposable
     /// coincidence.
     /// </para>
     /// </summary>
-    [LiveFact]
+    [WindowsLiveFact]
     public async Task ASourceThatReturnsNothingDoesNotEmptyTheDestination()
     {
         var (source, destination) = await fixture.CreatePairAsync();
@@ -117,7 +117,7 @@ public sealed class ServiceLiveTests(SqlServerFixture fixture) : IDisposable
     /// whole way.
     /// </para>
     /// </summary>
-    [LiveFact]
+    [WindowsLiveFact]
     public async Task AStageThatHasDriftedFromItsDestinationIsRebuiltRatherThanPublishedShifted()
     {
         var (source, destination) = await fixture.CreatePairAsync();
@@ -189,7 +189,7 @@ public sealed class ServiceLiveTests(SqlServerFixture fixture) : IDisposable
     /// what it held.
     /// </para>
     /// </summary>
-    [LiveFact]
+    [WindowsLiveFact]
     public async Task ASourceColumnTheDestinationDoesNotHaveStopsTheRunAndNamesItself()
     {
         var (source, destination) = await fixture.CreatePairAsync();
@@ -244,7 +244,7 @@ public sealed class ServiceLiveTests(SqlServerFixture fixture) : IDisposable
     /// has since grown to four million.
     /// </para>
     /// </summary>
-    [LiveFact]
+    [WindowsLiveFact]
     public async Task ALoadThatCollapsedToASliverOfTheDestinationIsRefusedWithNoFloorSet()
     {
         var (source, destination) = await fixture.CreatePairAsync();
@@ -275,7 +275,7 @@ public sealed class ServiceLiveTests(SqlServerFixture fixture) : IDisposable
     /// replace removed a hundred rows is a number the old path could not have produced.
     /// </para>
     /// </summary>
-    [LiveFact]
+    [WindowsLiveFact]
     public async Task ANormalLoadLoadsAndTheHistoryGetsTheNumbersTheWorkProduced()
     {
         var (source, destination) = await fixture.CreatePairAsync();
@@ -329,7 +329,7 @@ public sealed class ServiceLiveTests(SqlServerFixture fixture) : IDisposable
     /// service people turn off.
     /// </para>
     /// </summary>
-    [LiveFact]
+    [WindowsLiveFact]
     public async Task ARunWhoseJobIsClaimedByAnotherHostIsSkippedAndSaysSoAtInformation()
     {
         var (source, destination) = await fixture.CreatePairAsync();
