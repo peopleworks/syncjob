@@ -47,18 +47,34 @@ public static class ColumnMatcher
     /// then expected rather than an error.
     /// </param>
     /// <param name="destinationTable">Named in the error, because an operator reading it needs to know which table.</param>
+    /// <param name="notFromSource">
+    /// Destination columns the source is not expected to fill, so that a column left
+    /// empty on purpose is not reported as one left empty by accident.
+    /// <para>
+    /// Two things need this and neither could say so before. A field map marked
+    /// <c>IsExcluded</c> means the column does not travel - which the publishers already
+    /// honoured and the copy could not, so an excluded column made the step fail before
+    /// a publisher ever saw it. And a provenance stamp is written by the publisher after
+    /// the rows arrive, so requiring the source to carry it made the whole of the
+    /// provenance feature unreachable through the engine.
+    /// </para>
+    /// </param>
     /// <exception cref="ColumnMatchException">The two sides do not line up.</exception>
     public static IReadOnlyList<ColumnMatch> Match(
         IReadOnlyList<string> sourceColumns,
         IReadOnlyList<CatalogColumn> destinationColumns,
         IReadOnlyDictionary<string, string> columnMap,
         bool keepIdentity,
-        string destinationTable)
+        string destinationTable,
+        IEnumerable<string>? notFromSource = null)
     {
         ArgumentNullException.ThrowIfNull(sourceColumns);
         ArgumentNullException.ThrowIfNull(destinationColumns);
         ArgumentNullException.ThrowIfNull(columnMap);
         ArgumentException.ThrowIfNullOrWhiteSpace(destinationTable);
+
+        var notWritten = new HashSet<string>(
+            notFromSource ?? Enumerable.Empty<string>(), StringComparer.OrdinalIgnoreCase);
 
         var problems = new List<string>();
 
@@ -155,6 +171,24 @@ public static class ColumnMatcher
                 continue;
             }
 
+            if(notWritten.Contains(target.Name))
+            {
+                // Explicit beats implicit, and a map that names an excluded target is a
+                // contradiction the operator has to resolve: it says both "send this
+                // column there" and "nothing goes there".
+                if(map.ContainsKey(sourceName))
+                {
+                    problems.Add(
+                        $"the column map sends '{sourceName}' to '{target.Name}', which the step also excludes: " +
+                        "drop one of the two, because they cannot both be what was meant");
+                }
+
+                // Matched by name only, so the source simply happens to return a column
+                // the step said does not travel. Dropping it is what the exclusion asked
+                // for.
+                continue;
+            }
+
             if(target.IsGeneratedAlways)
             {
                 // A period column of a system-versioned table. It is an ordinary
@@ -179,6 +213,9 @@ public static class ColumnMatcher
         foreach(var column in destinationColumns)
         {
             if(column.IsComputed || column.IsRowVersion || column.IsGeneratedAlways || filledBy.ContainsKey(column.Name))
+                continue;
+
+            if(notWritten.Contains(column.Name))
                 continue;
 
             if(column.IsIdentity && !keepIdentity)

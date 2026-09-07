@@ -42,6 +42,18 @@ public sealed class CopyRequest
     /// </summary>
     public Dictionary<string, string> ColumnMap { get; init; } = new();
 
+    /// <summary>
+    /// Destination columns the source is not expected to fill, so that a column left
+    /// empty on purpose is not reported as one left empty by accident.
+    /// <para>
+    /// A field map marked <see cref="FieldMap.IsExcluded"/> goes here, and so does the
+    /// column of a <see cref="ProvenanceStamp"/>: the publisher writes that one after
+    /// the rows arrive. Both were honoured by the publishers and impossible for the
+    /// copy, which meant a step carrying either failed before a publisher ever saw it.
+    /// </para>
+    /// </summary>
+    public List<string> ColumnsNotFromSource { get; init; } = new();
+
     public int BatchSize { get; init; }
 
     public int CommandTimeoutSeconds { get; init; }

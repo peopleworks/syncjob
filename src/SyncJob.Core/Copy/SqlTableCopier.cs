@@ -84,7 +84,12 @@ public sealed class SqlTableCopier : ITableCopier
         var userDefined = schema.Select(x => x.DataType is null).ToArray();
 
         var matches = ColumnMatcher.Match(
-            sourceColumns, destinationColumns, request.ColumnMap, request.KeepIdentity, targetTable);
+            sourceColumns,
+            destinationColumns,
+            request.ColumnMap,
+            request.KeepIdentity,
+            targetTable,
+            request.ColumnsNotFromSource);
 
         var progress = request.Progress ?? NullProgress.Instance;
 

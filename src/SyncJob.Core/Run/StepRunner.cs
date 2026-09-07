@@ -452,12 +452,33 @@ public sealed class StepRunner
 
         foreach(var map in step.FieldMaps)
         {
-            if(map.IsExcluded || map.Source is not { Length: > 0 } from || map.Target is not { Length: > 0 } to)
+            if(map.IsExcluded)
+            {
+                // The destination's spelling, because it is the destination's columns
+                // the copy is matching against. A map that excludes by source name only
+                // still names the column the source returns, and the two are the same
+                // name in every case but a rename.
+                var excluded = map.Target ?? map.Source;
+                if(excluded is { Length: > 0 })
+                    request.ColumnsNotFromSource.Add(excluded);
+
+                continue;
+            }
+
+            if(map.Source is not { Length: > 0 } from || map.Target is not { Length: > 0 } to)
                 continue;
 
             if(!string.Equals(from, to, StringComparison.OrdinalIgnoreCase))
                 request.ColumnMap[from] = to;
         }
+
+        // The publisher writes the provenance stamp once the rows are in, so the source
+        // is not asked for it. Without this the whole of the provenance feature is
+        // unreachable: staging is cloned from the destination and therefore has the
+        // column, and the copy would refuse the step for a column no source was ever
+        // meant to carry.
+        if(step.Provenance?.Column is { Length: > 0 } stamp)
+            request.ColumnsNotFromSource.Add(stamp);
 
         return request;
     }
