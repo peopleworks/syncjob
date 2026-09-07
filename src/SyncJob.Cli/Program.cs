@@ -1,4 +1,4 @@
-using Microsoft.Data.SqlClient;
+﻿using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -1537,7 +1537,7 @@ namespace SyncJob
         }
 
         // Helper: parsea lista NAME=VALUE a diccionario
-        static Dictionary<string, string> ParseNameValuePairs(IEnumerable<string> pairs)
+        internal static Dictionary<string, string> ParseNameValuePairs(IEnumerable<string> pairs)
         {
             var dict = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             if (pairs == null) return dict;
